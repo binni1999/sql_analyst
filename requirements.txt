@@ -21,3 +21,4 @@ sqlglot #for parsing sql
 langgraph-checkpoint-postgres
 psycopg[binary,pool]
 redis
+pytest
