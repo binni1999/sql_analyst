@@ -1,0 +1,602 @@
+{
+  "dataset_id": "sql_analyst_core",
+  "version": "1.0.0",
+  "description": "Initial deterministic evaluation set for the multi-agent SQL/data analyst.",
+  "cases": [
+    {
+      "case_id": "agg-001",
+      "category": "basic_aggregation",
+      "description": "Calculate total units purchased across all order items.",
+      "question": "How many units have been purchased in total?",
+      "expected_intent": "data_query",
+      "expected_sql": "SELECT SUM(quantity) AS total_quantity FROM order_items",
+      "expected_tables": [
+        "order_items"
+      ],
+      "expected_metric": "quantity",
+      "expected_result": {
+        "type": "scalar",
+        "columns": [
+          "total_quantity"
+        ]
+      },
+      "expected_answer": "A single total quantity value.",
+      "expected_behavior": {
+        "outcome": "execute_query",
+        "clarification": false,
+        "human_approval": false
+      },
+      "expected_route": [
+        "intent",
+        "metadata",
+        "business_knowledge",
+        "sql",
+        "risk_check",
+        "analytics",
+        "answer"
+      ],
+      "tags": [
+        "aggregation",
+        "quantity"
+      ]
+    },
+    {
+      "case_id": "revenue-001",
+      "category": "revenue",
+      "description": "Use the business-defined discounted revenue formula.",
+      "question": "What is our total revenue?",
+      "expected_intent": "data_query",
+      "expected_sql": "SELECT SUM(quantity * unit_price * (1 - discount)) AS total_revenue FROM order_items",
+      "expected_tables": [
+        "order_items"
+      ],
+      "expected_metric": "revenue",
+      "expected_result": {
+        "type": "scalar",
+        "columns": [
+          "total_revenue"
+        ],
+        "formula": "SUM(quantity * unit_price * (1 - discount))"
+      },
+      "expected_answer": "A single total revenue value calculated after applying discounts.",
+      "expected_behavior": {
+        "outcome": "execute_query",
+        "clarification": false,
+        "human_approval": false
+      },
+      "expected_business_knowledge_documents": [
+        "metric.revenue"
+      ],
+      "expected_route": [
+        "intent",
+        "metadata",
+        "business_knowledge",
+        "sql",
+        "risk_check",
+        "analytics",
+        "answer"
+      ],
+      "tags": [
+        "revenue",
+        "business_knowledge"
+      ]
+    },
+    {
+      "case_id": "quantity-001",
+      "category": "quantity",
+      "description": "Calculate total units using the quantity metric definition.",
+      "question": "Show total units sold.",
+      "expected_intent": "data_query",
+      "expected_sql": "SELECT SUM(quantity) AS total_quantity FROM order_items",
+      "expected_tables": [
+        "order_items"
+      ],
+      "expected_metric": "quantity",
+      "expected_result": {
+        "type": "scalar",
+        "columns": [
+          "total_quantity"
+        ],
+        "formula": "SUM(quantity)"
+      },
+      "expected_answer": "A single total units value.",
+      "expected_behavior": {
+        "outcome": "execute_query",
+        "clarification": false,
+        "human_approval": false
+      },
+      "expected_business_knowledge_documents": [
+        "metric.quantity"
+      ],
+      "tags": [
+        "quantity"
+      ]
+    },
+    {
+      "case_id": "topn-001",
+      "category": "top_n",
+      "description": "Return the five products with the highest discounted revenue.",
+      "question": "Show the top 5 products by revenue.",
+      "expected_intent": "data_query",
+      "expected_sql": "SELECT p.product_name, SUM(oi.quantity * oi.unit_price * (1 - oi.discount)) AS revenue FROM order_items oi JOIN products p ON p.product_id = oi.product_id GROUP BY p.product_id, p.product_name ORDER BY revenue DESC LIMIT 5",
+      "expected_tables": [
+        "order_items",
+        "products"
+      ],
+      "expected_metric": "revenue",
+      "expected_result": {
+        "type": "tabular",
+        "columns": [
+          "product_name",
+          "revenue"
+        ],
+        "row_count": 5,
+        "ordering": "revenue_desc",
+        "limit": 5
+      },
+      "expected_answer": "Five products ordered from highest to lowest revenue.",
+      "expected_behavior": {
+        "outcome": "execute_query",
+        "clarification": false,
+        "human_approval": false
+      },
+      "expected_business_knowledge_documents": [
+        "metric.revenue"
+      ],
+      "tags": [
+        "top_n",
+        "join",
+        "sorting"
+      ]
+    },
+    {
+      "case_id": "sort-001",
+      "category": "sorting",
+      "description": "Rank products by total units sold in descending order.",
+      "question": "Which products sold the most units?",
+      "expected_intent": "data_query",
+      "expected_sql": "SELECT p.product_name, SUM(oi.quantity) AS total_quantity FROM order_items oi JOIN products p ON p.product_id = oi.product_id GROUP BY p.product_id, p.product_name ORDER BY total_quantity DESC",
+      "expected_tables": [
+        "order_items",
+        "products"
+      ],
+      "expected_metric": "quantity",
+      "expected_result": {
+        "type": "tabular",
+        "columns": [
+          "product_name",
+          "total_quantity"
+        ],
+        "ordering": "total_quantity_desc"
+      },
+      "expected_answer": "Products ordered from highest to lowest units sold.",
+      "expected_behavior": {
+        "outcome": "execute_query",
+        "clarification": false,
+        "human_approval": false
+      },
+      "expected_business_knowledge_documents": [
+        "metric.quantity"
+      ],
+      "tags": [
+        "sorting",
+        "join"
+      ]
+    },
+    {
+      "case_id": "filter-001",
+      "category": "filtering",
+      "description": "Calculate revenue only for delivered orders.",
+      "question": "What is the revenue from delivered orders?",
+      "expected_intent": "data_query",
+      "expected_sql": "SELECT SUM(oi.quantity * oi.unit_price * (1 - oi.discount)) AS total_revenue FROM orders o JOIN order_items oi ON oi.order_id = o.order_id WHERE o.status = 'Delivered'",
+      "expected_tables": [
+        "orders",
+        "order_items"
+      ],
+      "expected_metric": "revenue",
+      "expected_result": {
+        "type": "scalar",
+        "columns": [
+          "total_revenue"
+        ],
+        "filter": "orders.status = 'Delivered'"
+      },
+      "expected_answer": "Revenue generated by delivered orders only.",
+      "expected_behavior": {
+        "outcome": "execute_query",
+        "clarification": false,
+        "human_approval": false
+      },
+      "expected_business_knowledge_documents": [
+        "metric.revenue"
+      ],
+      "tags": [
+        "filter",
+        "join",
+        "revenue"
+      ]
+    },
+    {
+      "case_id": "time-001",
+      "category": "time_filtering",
+      "description": "Calculate revenue for orders placed during 2025.",
+      "question": "What was our revenue in 2025?",
+      "expected_intent": "data_query",
+      "expected_sql": "SELECT SUM(oi.quantity * oi.unit_price * (1 - oi.discount)) AS total_revenue FROM orders o JOIN order_items oi ON oi.order_id = o.order_id WHERE EXTRACT(YEAR FROM o.order_date) = 2025",
+      "expected_tables": [
+        "orders",
+        "order_items"
+      ],
+      "expected_metric": "revenue",
+      "expected_analytical_context": {
+        "metric": "revenue",
+        "time_range": {
+          "type": "year",
+          "year": 2025
+        }
+      },
+      "expected_result": {
+        "type": "scalar",
+        "columns": [
+          "total_revenue"
+        ],
+        "time_filter": {
+          "column": "orders.order_date",
+          "year": 2025
+        }
+      },
+      "expected_answer": "Revenue for orders placed in calendar year 2025.",
+      "expected_behavior": {
+        "outcome": "execute_query",
+        "clarification": false,
+        "human_approval": false
+      },
+      "expected_business_knowledge_documents": [
+        "metric.revenue"
+      ],
+      "tags": [
+        "time",
+        "2025",
+        "revenue"
+      ]
+    },
+    {
+      "case_id": "context-001",
+      "category": "analytical_context",
+      "description": "Capture product/revenue/top-N intent in analytical context.",
+      "question": "Show the top 5 products by revenue.",
+      "expected_intent": "data_query",
+      "expected_analytical_context": {
+        "entity": "product",
+        "metric": "revenue",
+        "limit": 5,
+        "sort_direction": "desc"
+      },
+      "expected_tables": [
+        "order_items",
+        "products"
+      ],
+      "expected_metric": "revenue",
+      "expected_behavior": {
+        "outcome": "execute_query",
+        "context_required": true
+      },
+      "tags": [
+        "context",
+        "top_n",
+        "revenue"
+      ],
+      "expected_sql": "SELECT p.product_name, SUM(oi.quantity * oi.unit_price * (1 - oi.discount)) AS revenue FROM order_items oi JOIN products p ON p.product_id = oi.product_id GROUP BY p.product_id, p.product_name ORDER BY revenue DESC LIMIT 5",
+      "expected_result": {
+        "type": "tabular",
+        "columns": [
+          "product_name",
+          "revenue"
+        ],
+        "row_count": 5,
+        "ordering": "revenue_desc",
+        "limit": 5
+      }
+    },
+    {
+      "case_id": "followup-001",
+      "category": "follow_up",
+      "description": "Resolve a short follow-up using the previous analytical context.",
+      "question": "Only for 2025.",
+      "conversation": [
+        {
+          "question": "Show the top 5 products by revenue.",
+          "expected_resolved_question": "Show the top 5 products by revenue."
+        },
+        {
+          "question": "Only for 2025.",
+          "expected_resolved_question": "Show the top 5 products by revenue for 2025.",
+          "expected_analytical_context": {
+            "entity": "product",
+            "metric": "revenue",
+            "limit": 5,
+            "sort_direction": "desc",
+            "time_range": {
+              "type": "year",
+              "year": 2025
+            }
+          }
+        }
+      ],
+      "expected_resolved_question": "Show the top 5 products by revenue for 2025.",
+      "expected_analytical_context": {
+        "entity": "product",
+        "metric": "revenue",
+        "limit": 5,
+        "sort_direction": "desc",
+        "time_range": {
+          "type": "year",
+          "year": 2025
+        }
+      },
+      "expected_tables": [
+        "orders",
+        "order_items",
+        "products"
+      ],
+      "expected_metric": "revenue",
+      "expected_behavior": {
+        "outcome": "execute_query",
+        "uses_previous_context": true,
+        "clarification": false
+      },
+      "tags": [
+        "follow_up",
+        "memory",
+        "context"
+      ],
+      "expected_sql": "SELECT p.product_name, SUM(oi.quantity * oi.unit_price * (1 - oi.discount)) AS revenue FROM orders o JOIN order_items oi ON oi.order_id = o.order_id JOIN products p ON p.product_id = oi.product_id WHERE EXTRACT(YEAR FROM o.order_date) = 2025 GROUP BY p.product_id, p.product_name ORDER BY revenue DESC LIMIT 5",
+      "expected_result": {
+        "type": "tabular",
+        "columns": [
+          "product_name",
+          "revenue"
+        ],
+        "row_count": 5,
+        "ordering": "revenue_desc",
+        "limit": 5,
+        "time_filter": {
+          "column": "orders.order_date",
+          "year": 2025
+        }
+      }
+    },
+    {
+      "case_id": "business-001",
+      "category": "business_knowledge",
+      "description": "Use the business definition of revenue instead of an undiscounted sales formula.",
+      "question": "What are the highest-performing products by revenue?",
+      "expected_intent": "data_query",
+      "expected_sql": "SELECT p.product_name, SUM(oi.quantity * oi.unit_price * (1 - oi.discount)) AS revenue FROM order_items oi JOIN products p ON p.product_id = oi.product_id GROUP BY p.product_id, p.product_name ORDER BY revenue DESC",
+      "expected_tables": [
+        "order_items",
+        "products"
+      ],
+      "expected_metric": "revenue",
+      "expected_result": {
+        "type": "tabular",
+        "columns": [
+          "product_name",
+          "revenue"
+        ],
+        "ordering": "revenue_desc",
+        "formula": "SUM(quantity * unit_price * (1 - discount))"
+      },
+      "expected_answer": "Products ranked by the business-defined discounted revenue metric.",
+      "expected_behavior": {
+        "outcome": "execute_query",
+        "business_definition_required": true
+      },
+      "expected_business_knowledge_documents": [
+        "metric.revenue"
+      ],
+      "tags": [
+        "rag",
+        "business_knowledge",
+        "revenue"
+      ]
+    },
+    {
+      "case_id": "clarification-001",
+      "category": "clarification",
+      "description": "An underspecified ranking request should ask which metric defines best performance.",
+      "question": "Which products are the best?",
+      "expected_intent": "data_query",
+      "expected_behavior": {
+        "outcome": "clarification",
+        "clarification": true,
+        "human_approval": false
+      },
+      "expected_answer": "Ask the user which metric should define best-performing products, such as revenue or units sold.",
+      "tags": [
+        "clarification",
+        "ambiguous"
+      ]
+    },
+    {
+      "case_id": "unsupported-001",
+      "category": "unsupported_request",
+      "description": "A non-data request should not enter SQL generation as a normal analytical query.",
+      "question": "Write a poem about our customers.",
+      "expected_intent": "unknown",
+      "expected_behavior": {
+        "outcome": "reject_or_explain_unsupported",
+        "sql_generation": false,
+        "clarification": false
+      },
+      "tags": [
+        "unsupported",
+        "intent"
+      ]
+    },
+    {
+      "case_id": "repair-001",
+      "category": "sql_repair",
+      "description": "Repair a SQL query with a schema error while preserving the requested metric.",
+      "question": "Show total revenue by product.",
+      "expected_intent": "data_query",
+      "expected_sql": "SELECT p.product_name, SUM(oi.quantity * oi.unit_price * (1 - oi.discount)) AS total_revenue FROM order_items oi JOIN products p ON p.product_id = oi.product_id GROUP BY p.product_id, p.product_name",
+      "expected_tables": [
+        "order_items",
+        "products"
+      ],
+      "expected_metric": "revenue",
+      "expected_behavior": {
+        "outcome": "execute_query",
+        "repair_allowed": true,
+        "final_sql_must_validate": true
+      },
+      "expected_business_knowledge_documents": [
+        "metric.revenue"
+      ],
+      "tags": [
+        "repair",
+        "validation",
+        "revenue"
+      ],
+      "expected_result": {
+        "type": "tabular",
+        "columns": [
+          "product_name",
+          "total_revenue"
+        ],
+        "ordering": "product_name_grouped"
+      }
+    },
+    {
+      "case_id": "tool-001",
+      "category": "tool_discovery",
+      "description": "The SQL agent should be able to discover schema/metadata tools when required by the execution path.",
+      "question": "What is the average product rating by product?",
+      "expected_intent": "data_query",
+      "expected_sql": "SELECT p.product_name, AVG(r.rating) AS average_rating FROM reviews r JOIN products p ON p.product_id = r.product_id GROUP BY p.product_id, p.product_name",
+      "expected_tables": [
+        "reviews",
+        "products"
+      ],
+      "expected_metric": "rating",
+      "expected_result": {
+        "type": "tabular",
+        "columns": [
+          "product_name",
+          "average_rating"
+        ]
+      },
+      "expected_behavior": {
+        "outcome": "execute_query",
+        "tool_discovery_allowed": true
+      },
+      "expected_tools": [
+        "get_schema",
+        "get_metadata"
+      ],
+      "tags": [
+        "tools",
+        "schema",
+        "metadata"
+      ]
+    },
+    {
+      "case_id": "hitl-001",
+      "category": "human_approval",
+      "description": "A potentially expensive cross join should trigger the SQL risk/HITL path rather than execute silently.",
+      "question": "Join every customer with every product and show the combinations.",
+      "expected_intent": "data_query",
+      "expected_behavior": {
+        "outcome": "human_approval",
+        "human_approval": true,
+        "risk_type": "cross_join"
+      },
+      "expected_route": [
+        "intent",
+        "metadata",
+        "business_knowledge",
+        "sql",
+        "risk_check"
+      ],
+      "tags": [
+        "hitl",
+        "risk",
+        "cross_join"
+      ]
+    },
+    {
+      "case_id": "multiturn-001",
+      "category": "multi_turn",
+      "description": "Preserve metric, entity, ranking, and time context across multiple follow-up turns.",
+      "question": "Top 5 products.",
+      "conversation": [
+        {
+          "question": "Show products by revenue.",
+          "expected_resolved_question": "Show products by revenue."
+        },
+        {
+          "question": "Top 5.",
+          "expected_resolved_question": "Show the top 5 products by revenue."
+        },
+        {
+          "question": "Only for 2025.",
+          "expected_resolved_question": "Show the top 5 products by revenue for 2025.",
+          "expected_analytical_context": {
+            "entity": "product",
+            "metric": "revenue",
+            "limit": 5,
+            "sort_direction": "desc",
+            "time_range": {
+              "type": "year",
+              "year": 2025
+            }
+          }
+        }
+      ],
+      "expected_resolved_question": "Show the top 5 products by revenue for 2025.",
+      "expected_analytical_context": {
+        "entity": "product",
+        "metric": "revenue",
+        "limit": 5,
+        "sort_direction": "desc",
+        "time_range": {
+          "type": "year",
+          "year": 2025
+        }
+      },
+      "expected_tables": [
+        "orders",
+        "order_items",
+        "products"
+      ],
+      "expected_metric": "revenue",
+      "expected_behavior": {
+        "outcome": "execute_query",
+        "uses_memory": true,
+        "uses_previous_context": true
+      },
+      "tags": [
+        "multi_turn",
+        "memory",
+        "follow_up"
+      ],
+      "expected_sql": "SELECT p.product_name, SUM(oi.quantity * oi.unit_price * (1 - oi.discount)) AS revenue FROM orders o JOIN order_items oi ON oi.order_id = o.order_id JOIN products p ON p.product_id = oi.product_id WHERE EXTRACT(YEAR FROM o.order_date) = 2025 GROUP BY p.product_id, p.product_name ORDER BY revenue DESC LIMIT 5",
+      "expected_result": {
+        "type": "tabular",
+        "columns": [
+          "product_name",
+          "revenue"
+        ],
+        "row_count": 5,
+        "ordering": "revenue_desc",
+        "limit": 5,
+        "time_filter": {
+          "column": "orders.order_date",
+          "year": 2025
+        }
+      }
+    }
+  ]
+}

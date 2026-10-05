@@ -1,0 +1,84 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: datapilot-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-datapilot}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-root123}
+    volumes:
+      - datapilot_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-datapilot}" ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+    networks:
+      - datapilot-network
+
+  redis:
+    image: redis:7
+    container_name: datapilot-redis
+    restart: unless-stopped
+    command: [ "redis-server", "--appendonly", "yes" ]
+    volumes:
+      - datapilot_redis_data:/data
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    networks:
+      - datapilot-network
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: multi-agent-data-analyst-backend:step68.7
+    container_name: datapilot-backend
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      HOST: 0.0.0.0
+      PORT: 8000
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-root123}@postgres:5432/${POSTGRES_DB:-datapilot}
+      LANGGRAPH_CHECKPOINT_DB_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-root123}@postgres:5432/${POSTGRES_DB:-datapilot}
+      REDIS_URL: redis://redis:6379/0
+      REDIS_CACHE_TTL_SECONDS: ${REDIS_CACHE_TTL_SECONDS:-300}
+      LOG_FORMAT: ${LOG_FORMAT:-auto}
+      REQUEST_LOGGING: ${REQUEST_LOGGING:-true}
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          python -c "import urllib.request; response=urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=3); raise SystemExit(0 if response.status == 200 else 1)"
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - datapilot-network
+
+volumes:
+  datapilot_postgres_data:
+    name: datapilot_postgres_data
+  datapilot_redis_data:
+    name: datapilot_redis_data
+
+networks:
+  datapilot-network:
+    name: datapilot-network
+    driver: bridge

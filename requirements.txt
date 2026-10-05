@@ -1,0 +1,23 @@
+langchain 
+langgraph 
+langchain-community 
+sqlalchemy 
+psycopg2-binary 
+pandas 
+numpy 
+plotly 
+fastapi 
+uvicorn 
+pydantic 
+python-dotenv
+sqlalchemy
+psycopg2-binary
+python-dotenv
+langchain
+langchain-openai
+pydantic
+langchain-groq
+sqlglot #for parsing sql
+langgraph-checkpoint-postgres
+psycopg[binary,pool]
+redis
