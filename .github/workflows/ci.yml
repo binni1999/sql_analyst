@@ -20,7 +20,10 @@ jobs:
         env:
           POSTGRES_DB: datapilot
           POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
+          # CI-only: the GitHub runner is isolated and the database is not
+          # exposed beyond the runner. Avoid credential drift between the
+          # service container and Python setup/test processes.
+          POSTGRES_HOST_AUTH_METHOD: trust
         ports:
           - 5432:5432
         options: >-
@@ -40,8 +43,10 @@ jobs:
           --health-retries 10
 
     env:
-      DATABASE_URL: postgresql+psycopg2://postgres:postgres@localhost:5432/datapilot
-      LANGGRAPH_CHECKPOINT_DB_URL: postgresql://postgres:postgres@localhost:5432/datapilot
+      # CI database uses PostgreSQL trust auth; this avoids relying on a
+      # password that can drift from the service-container configuration.
+      DATABASE_URL: postgresql+psycopg2://postgres@127.0.0.1:5432/datapilot
+      LANGGRAPH_CHECKPOINT_DB_URL: postgresql://postgres@127.0.0.1:5432/datapilot
       REDIS_URL: redis://localhost:6379/0
       REDIS_CACHE_TTL_SECONDS: 300
       GROQ_API_KEY: ci-test-key
@@ -72,9 +77,29 @@ jobs:
           python -m pip install -r requirements.txt
           python -m pip install pytest
 
+      - name: Verify test database connection
+        env:
+          PYTHONPATH: app
+        run: |
+          python - <<'PY'
+          import os
+          import psycopg2
+
+          conn = psycopg2.connect(
+              host="127.0.0.1",
+              port=5432,
+              dbname="datapilot",
+              user="postgres",
+          )
+          conn.close()
+          print("PostgreSQL connection verified")
+          PY
+
       - name: Initialize test database
         env:
           PYTHONPATH: app
+          DATABASE_URL: postgresql+psycopg2://postgres@127.0.0.1:5432/datapilot
+          LANGGRAPH_CHECKPOINT_DB_URL: postgresql://postgres@127.0.0.1:5432/datapilot
         run: |
           python -m database.create_schema_orm
           python -m database.insert_dummydata
@@ -83,6 +108,10 @@ jobs:
         run: python -m compileall -q app
 
       - name: Run test suite
+        env:
+          PYTHONPATH: app
+          DATABASE_URL: postgresql+psycopg2://postgres@127.0.0.1:5432/datapilot
+          LANGGRAPH_CHECKPOINT_DB_URL: postgresql://postgres@127.0.0.1:5432/datapilot
         run: python -m pytest -q
 
   frontend-checks:
