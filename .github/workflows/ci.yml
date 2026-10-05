@@ -66,14 +66,24 @@ jobs:
           cache: pip
           cache-dependency-path: requirements.txt
 
-      - name: Install dependencies
-        run: python -m pip install --upgrade pip && pip install -r requirements.txt
+      - name: Install backend dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install pytest
+
+      - name: Initialize test database
+        env:
+          PYTHONPATH: app
+        run: |
+          python -m database.create_schema_orm
+          python -m database.insert_dummydata
 
       - name: Compile Python sources
         run: python -m compileall -q app
 
       - name: Run test suite
-        run: pytest -q
+        run: python -m pytest -q
 
   frontend-checks:
     name: Frontend lint and build

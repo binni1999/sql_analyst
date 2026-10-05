@@ -27,16 +27,12 @@ from sqlalchemy.orm import (
 from sqlalchemy.dialects.postgresql import NUMERIC
 
 # ── Database Configuration ──────────────────────────────────────────────────
-# Format: postgresql://username:password@host:port/database
-# Define database connection credentials
-DB_USER = "postgres"
-DB_PASSWORD = "root123"
-DB_HOST = "localhost" # or remote host IP
-DB_PORT = "5432"
-DB_NAME = "datapilot"
+try:
+    from config import get_settings
+except ImportError:
+    from app.config import get_settings
 
-# Construct the connection string
-DATABASE_URL = f"postgresql+psycopg2://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+DATABASE_URL = get_settings().database_url
 
 
 # Create engine

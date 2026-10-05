@@ -30,10 +30,13 @@ from agents.analytical_context_extractor import (
 from tools.sql_tool import ToolCallingExecutor, build_sql_tools
 from services.checkpoint_store import PostgresCheckpointStore
 from services.memory_service import ConversationMemoryService
+from services.redis_cache import RedisCacheService
 from security.guardrails import SQLSecurityGuardrail
 from security.executor import SecureSQLExecutor
 from security.policies import SQLSecurityPolicy
 from security.input_guardrails import PromptInjectionGuardrail, PromptSecurityPolicy
+from config import get_settings
+from testing.llm_doubles import TestAnswerGenerator, TestSQLGenerator
 
 def create_data_analyst_service() -> DataAnalystService:
 
@@ -46,6 +49,7 @@ def create_data_analyst_service() -> DataAnalystService:
     clarification_agent = ClarificationAgent()
 
     metadata_service = MetadataService()
+    redis_cache = RedisCacheService()
     follow_up_resolver = FollowUpResolver()
     analytical_context_extractor = (
         AnalyticalContextExtractor()
@@ -57,14 +61,20 @@ def create_data_analyst_service() -> DataAnalystService:
 
     metadata_agent = MetadataAgent(
         metadata_service=metadata_service,
-        db=db
+        db=db,
+        cache_service=redis_cache,
     )
 
     # -----------------------------------------
     # SQL components
     # -----------------------------------------
 
-    sql_generator = SQLGenerator()
+    settings = get_settings()
+
+    if settings.environment.lower() == "test":
+        sql_generator = TestSQLGenerator()
+    else:
+        sql_generator = SQLGenerator()
 
     sql_validator = SQLValidator()
 
@@ -124,7 +134,10 @@ def create_data_analyst_service() -> DataAnalystService:
     # Answer generation
     # -----------------------------------------
 
-    answer_generator = AnswerGenerator()
+    if settings.environment.lower() == "test":
+        answer_generator = TestAnswerGenerator()
+    else:
+        answer_generator = AnswerGenerator()
 
     # -----------------------------------------
     # LangGraph orchestration
