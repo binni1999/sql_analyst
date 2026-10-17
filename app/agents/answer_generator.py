@@ -6,17 +6,20 @@ load_dotenv()
 # pyrefly: ignore [missing-import]
 from langchain_groq import ChatGroq
 from services.observability import ObservabilityCallbackHandler
+from services.resilient_llm import build_resilient_chat_model
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
 class AnswerGenerator:
 
     def __init__(self):
-        self.llm = ChatGroq(
-            model="openai/gpt-oss-120b",
+        primary_llm = ChatGroq(
+            model=os.getenv("GROQ_PRIMARY_MODEL", "openai/gpt-oss-120b"),
             api_key=GROQ_API_KEY,
             temperature=0,
+            max_retries=0,
             callbacks=[ObservabilityCallbackHandler()],
         )
+        self.llm = build_resilient_chat_model(primary_llm)
     
     def build_prompt(
         self,
@@ -65,6 +68,7 @@ Instructions:
             analyzed_result
         )
 
+        
         response = self.llm.invoke(prompt)
         # pyrefly: ignore [bad-return]
         return response.content

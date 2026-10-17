@@ -385,14 +385,6 @@ class DataAnalystGraph:
 
             config = {"configurable": {"thread_id": conversation_id}}
 
-            print("\n========== RESUME DIAGNOSTIC ==========")
-            snapshot = self.graph.get_state(config)
-            print("RESUME THREAD:", conversation_id)
-            print("RESUME NEXT:", snapshot.next)
-            print("RESUME TASKS:", snapshot.tasks)
-            print("RESUME VALUES:", snapshot.values)
-            print("========================================\n")
-
             result = self.graph.invoke(
                 Command(resume=approved),
                 config=config,

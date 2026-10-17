@@ -3,7 +3,10 @@ from concurrent.futures import ThreadPoolExecutor
 from models.agent import MetadataResult
 from models.execution_trace import ExecutionTraceEvent
 from models.state import AgentState
-
+try:
+    from config import get_settings
+except ImportError:
+    from app.config import get_settings
 
 class MetadataAgent:
 
@@ -13,6 +16,13 @@ class MetadataAgent:
         self.metadata_service = metadata_service
         self.db = db
         self.cache_service = cache_service
+
+        settings = get_settings()
+
+        self.schema_cache_key = (
+            f"datapilot:metadata:schema:"
+            f"{settings.redis_schema_cache_version}"
+        )
 
     def build_schema_text(self, schemas):
 
@@ -78,7 +88,7 @@ class MetadataAgent:
     def _retrieve_schema(self):
         """Retrieve database schema, using Redis when available."""
         if self.cache_service is not None:
-            cached = self.cache_service.get_json(self.SCHEMA_CACHE_KEY)
+            cached = self.cache_service.get_json(self.schema_cache_key)
             if cached is not None:
                 return cached["schemas"], cached["schema_text"]
 
@@ -87,7 +97,7 @@ class MetadataAgent:
 
         if self.cache_service is not None:
             self.cache_service.set_json(
-                self.SCHEMA_CACHE_KEY,
+                self.schema_cache_key,
                 {"schemas": schemas, "schema_text": schema_text},
             )
 

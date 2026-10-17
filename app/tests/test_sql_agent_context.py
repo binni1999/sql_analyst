@@ -477,6 +477,8 @@ def create_sql_agent():
         semantic_validator=FakeSemanticValidator(),
         db=FakeDatabase(),
         context_validator=context_validator,
+        repair_strategy=FakeRepairStrategy(),
+        max_retries=1,
     )
 
     return agent, generator
@@ -1039,12 +1041,13 @@ def test_sql_agent_handles_initial_generation_failure():
     assert result.sql.errors is not None
 
     assert any(
-        "LLM generation service unavailable" in error
+        "SQL generation failed because the language-model provider"
+        in error
         for error in result.sql.errors
     )
 
-    assert any(
-        "SQL generation failed" in error
+    assert all(
+        "LLM generation service unavailable" not in error
         for error in result.sql.errors
     )
 
@@ -1232,7 +1235,7 @@ def test_sql_agent_trace_contains_context_error_metadata():
     )
 
     state = create_state(
-        AnalyticalContext(
+    AnalyticalContext(
             entity="product",
             metric="revenue",
             aggregation="sum",
@@ -1258,3 +1261,468 @@ def test_sql_agent_trace_contains_context_error_metadata():
     )
     assert context_event["metadata"]["error_count"] == 1
 
+
+
+def test_sql_agent_repairs_sqlglot_validation_failure():
+    from types import SimpleNamespace
+
+    class FailOnceSQLValidator:
+        def __init__(self):
+            self.calls = 0
+
+        def validate(self, sql, schemas):
+            self.calls += 1
+
+            if self.calls == 1:
+                return SimpleNamespace(
+                    is_valid=False,
+                    errors=["SQL syntax validation failed"],
+                )
+
+            return SimpleNamespace(is_valid=True, errors=[])
+
+    generator = RepairTrackingSQLGenerator()
+    validator = FailOnceSQLValidator()
+
+    agent = SQLAgent(
+        sql_generator=generator,
+        sql_validator=validator,
+        semantic_validator=FakeSemanticValidator(),
+        db=FakeDatabase(),
+        context_validator=FakeContextValidator(),
+        repair_strategy=FakeRepairStrategy(),
+        max_retries=2,
+    )
+
+    context = AnalyticalContext(
+        entity="product",
+        metric="revenue",
+        aggregation="sum",
+        limit=5,
+        sort_direction="desc",
+    )
+
+    result = agent.run(create_state(context))
+
+    assert validator.calls >= 2
+    assert generator.fix_errors is not None
+    assert result.sql is not None
+    assert any(
+        event.get("stage") == "sqlglot_validation"
+        and event.get("status") == "failed"
+        for event in result.execution_trace
+    )
+
+
+def test_sql_agent_handles_sqlglot_repair_exception():
+    from types import SimpleNamespace
+
+    class FailOnceSQLValidator:
+        def __init__(self):
+            self.calls = 0
+
+        def validate(self, sql, schemas):
+            self.calls += 1
+            return SimpleNamespace(
+                is_valid=False,
+                errors=["Invalid SQL syntax"],
+            )
+
+    class FailingRepairGenerator(RepairTrackingSQLGenerator):
+        def fix_sql(
+            self,
+            question,
+            sql,
+            errors,
+            schema,
+            metadata,
+            analytical_context=None,
+        ):
+            raise RuntimeError("Simulated SQL repair failure")
+
+    generator = FailingRepairGenerator()
+    validator = FailOnceSQLValidator()
+
+    agent = SQLAgent(
+        sql_generator=generator,
+        sql_validator=validator,
+        semantic_validator=FakeSemanticValidator(),
+        db=FakeDatabase(),
+        context_validator=FakeContextValidator(),
+        repair_strategy=FakeRepairStrategy(),
+        max_retries=2,
+    )
+
+    context = AnalyticalContext(
+        entity="product",
+        metric="revenue",
+        aggregation="sum",
+        limit=5,
+        sort_direction="desc",
+    )
+
+    result = agent.run(create_state(context))
+
+    assert result.sql is not None
+    assert result.sql.success is False
+    assert validator.calls == 1
+    assert any(
+        "Simulated SQL repair failure" in str(error)
+        for error in result.sql.errors
+    )
+    assert any(
+        event.get("stage") == "repair"
+        and event.get("status") == "failed"
+        for event in result.execution_trace
+    )
+
+
+def test_sql_agent_handles_database_validation_failure():
+    class FailingDatabase(FakeDatabase):
+        def validate_with_database(self, sql):
+            return {
+                "valid": False,
+                "error": "Simulated PostgreSQL validation failure",
+            }
+
+    agent = SQLAgent(
+        sql_generator=RepairTrackingSQLGenerator(),
+        sql_validator=FakeSQLValidator(),
+        semantic_validator=FakeSemanticValidator(),
+        db=FailingDatabase(),
+        context_validator=FakeContextValidator(),
+        repair_strategy=FakeRepairStrategy(),
+        max_retries=1,
+    )
+
+    context = AnalyticalContext(
+        entity="product",
+        metric="revenue",
+        aggregation="sum",
+        limit=5,
+        sort_direction="desc",
+    )
+
+    result = agent.run(create_state(context))
+
+    assert result.sql is not None
+    assert result.sql.success is False
+    assert any(
+        "Simulated PostgreSQL validation failure" in str(error)
+        for error in result.sql.errors
+    )
+    assert any(
+        event.get("stage") == "database_validation"
+        and event.get("status") == "failed"
+        and "Simulated PostgreSQL validation failure"
+        in str(event.get("message", ""))
+        for event in result.execution_trace
+    )
+
+def test_sql_agent_handles_semantic_validation_failure():
+    class FailingSemanticValidator:
+        def validate(self, question, sql, metrics_used):
+            return {
+                "is_valid": False,
+                "errors": [
+                    "Revenue formula does not match business definition."
+                ],
+            }
+
+    agent = SQLAgent(
+        sql_generator=RepairTrackingSQLGenerator(),
+        sql_validator=FakeSQLValidator(),
+        semantic_validator=FailingSemanticValidator(),
+        db=FakeDatabase(),
+        context_validator=FakeContextValidator(),
+        repair_strategy=FakeRepairStrategy(),
+        max_retries=1,
+    )
+
+    context = AnalyticalContext(
+        entity="product",
+        metric="revenue",
+        aggregation="sum",
+        limit=5,
+        sort_direction="desc",
+    )
+
+    result = agent.run(create_state(context))
+
+    assert result.sql is not None
+    assert result.sql.success is False
+    assert any(
+        "Revenue formula does not match business definition."
+        in str(error)
+        for error in result.sql.errors
+    )
+    assert any(
+        event.get("stage") == "semantic_validation"
+        and event.get("status") == "failed"
+        and event.get("error_type") == "semantic"
+        for event in result.execution_trace
+    )
+
+def test_sql_agent_repairs_sql_after_database_validation_failure():
+    class RetryDatabase(FakeDatabase):
+        def __init__(self):
+            self.validation_calls = 0
+
+        def validate_with_database(self, sql):
+            self.validation_calls += 1
+
+            if self.validation_calls == 1:
+                return {
+                    "valid": False,
+                    "error": "Simulated PostgreSQL validation failure",
+                }
+
+            return {"valid": True, "error": None}
+
+    class DatabaseRepairGenerator(RepairTrackingSQLGenerator):
+        def __init__(self):
+            super().__init__()
+            self.repair_calls = 0
+
+        def fix_sql(self, *args, **kwargs):
+            self.repair_calls += 1
+            return "SELECT 1"
+
+    database = RetryDatabase()
+    generator = DatabaseRepairGenerator()
+
+    agent = SQLAgent(
+        sql_generator=generator,
+        sql_validator=FakeSQLValidator(),
+        semantic_validator=FakeSemanticValidator(),
+        db=database,
+        context_validator=FakeContextValidator(),
+        repair_strategy=FakeRepairStrategy(),
+        max_retries=2,
+    )
+
+    context = AnalyticalContext(
+        entity="product",
+        metric="revenue",
+        aggregation="sum",
+        limit=5,
+        sort_direction="desc",
+    )
+
+    result = agent.run(create_state(context))
+
+    assert database.validation_calls == 2
+    assert generator.repair_calls == 1
+    assert result.sql is not None
+    assert result.sql.success is True
+    assert any(
+        event.get("stage") == "repair"
+        and event.get("status") == "success"
+        for event in result.execution_trace
+    )
+
+
+def test_sql_agent_repairs_sql_after_semantic_validation_failure():
+    class FailOnceSemanticValidator:
+        def __init__(self):
+            self.calls = 0
+
+        def validate(self, question, sql, metrics_used):
+            self.calls += 1
+
+            if self.calls == 1:
+                return {
+                    "is_valid": False,
+                    "errors": [
+                        "Revenue formula does not match business definition."
+                    ],
+                }
+
+            return {
+                "is_valid": True,
+                "errors": [],
+            }
+
+    generator = RepairTrackingSQLGenerator()
+    semantic_validator = FailOnceSemanticValidator()
+
+    agent = SQLAgent(
+        sql_generator=generator,
+        sql_validator=FakeSQLValidator(),
+        semantic_validator=semantic_validator,
+        db=FakeDatabase(),
+        context_validator=FakeContextValidator(),
+        repair_strategy=FakeRepairStrategy(),
+        max_retries=2,
+    )
+
+    context = AnalyticalContext(
+        entity="product",
+        metric="revenue",
+        aggregation="sum",
+        limit=5,
+        sort_direction="desc",
+    )
+
+    result = agent.run(create_state(context))
+
+    assert result.sql is not None
+    assert result.sql.success is True
+    assert semantic_validator.calls == 2
+    assert generator.fix_errors is not None
+
+    repair_events = [
+        event
+        for event in result.execution_trace
+        if event.get("stage") == "repair"
+    ]
+
+    assert len(repair_events) == 1
+    assert repair_events[0]["status"] == "success"
+
+
+
+def test_fix_sql_supports_legacy_generator_without_business_knowledge():
+    class LegacyGenerator:
+        def fix_sql(
+            self,
+            *,
+            question,
+            sql,
+            errors,
+            schema,
+            metadata,
+            analytical_context,
+        ):
+            return "SELECT legacy"
+
+    agent = SQLAgent(
+        sql_generator=LegacyGenerator(),
+        sql_validator=FakeSQLValidator(),
+        semantic_validator=FakeSemanticValidator(),
+        db=FakeDatabase(),
+        context_validator=FakeContextValidator(),
+    )
+
+    result = agent._fix_sql(
+        question="test question",
+        sql="SELECT old",
+        errors=["invalid SQL"],
+        schema="test_schema",
+        metadata="test metadata",
+        analytical_context=None,
+        business_knowledge=None,
+    )
+
+    assert result == "SELECT legacy"
+
+
+def test_fix_sql_passes_business_knowledge_when_supported():
+    class ModernGenerator:
+        def __init__(self):
+            self.received_business_knowledge = None
+
+        def fix_sql(
+            self,
+            *,
+            question,
+            sql,
+            errors,
+            schema,
+            metadata,
+            analytical_context,
+            business_knowledge=None,
+        ):
+            self.received_business_knowledge = business_knowledge
+            return "SELECT modern"
+
+    generator = ModernGenerator()
+
+    agent = SQLAgent(
+        sql_generator=generator,
+        sql_validator=FakeSQLValidator(),
+        semantic_validator=FakeSemanticValidator(),
+        db=FakeDatabase(),
+        context_validator=FakeContextValidator(),
+    )
+
+    marker = object()
+
+    result = agent._fix_sql(
+        question="test question",
+        sql="SELECT old",
+        errors=["invalid SQL"],
+        schema="test_schema",
+        metadata="test metadata",
+        analytical_context=None,
+        business_knowledge=marker,
+    )
+
+    assert result == "SELECT modern"
+    assert generator.received_business_knowledge is marker
+
+
+
+def test_sql_agent_returns_failure_when_sqlglot_retry_limit_is_reached(capsys):
+    generator = AlwaysFailingSQLGenerator()
+
+    class AlwaysInvalidSQLValidator:
+        def __init__(self):
+            self.calls = 0
+
+        def validate(self, sql, schemas):
+            self.calls += 1
+
+            class Result:
+                is_valid = False
+                errors = ["SQL syntax validation failed"]
+
+            return Result()
+
+    sql_validator = AlwaysInvalidSQLValidator()
+
+    agent = SQLAgent(
+        sql_generator=generator,
+        sql_validator=sql_validator,
+        semantic_validator=FakeSemanticValidator(),
+        db=FakeDatabase(),
+        context_validator=FakeContextValidator(),
+        repair_strategy=FakeRepairStrategy(),
+        max_retries=1,
+    )
+
+    result = agent.run(create_state())
+
+    # SQL validation must fail on the only permitted attempt.
+    assert sql_validator.calls == 1
+
+    # The agent must return a failed result.
+    assert result.sql is not None
+    assert result.sql.success is False
+    assert result.sql.sql == "SELECT invalid_sql"
+    assert result.sql.attempts == 1
+    assert result.sql.errors
+
+    # Confirm the retry-limit branch was reached.
+    assert "Maximum SQL retry limit reached." in capsys.readouterr().out
+
+
+
+
+def test_sql_agent_safety_fallback_when_max_retries_is_zero():
+    agent = SQLAgent(
+        sql_generator=AlwaysFailingSQLGenerator(),
+        sql_validator=FakeSQLValidator(),
+        semantic_validator=FakeSemanticValidator(),
+        db=FakeDatabase(),
+        context_validator=FakeContextValidator(),
+        repair_strategy=FakeRepairStrategy(),
+        max_retries=0,
+    )
+
+    result = agent.run(create_state())
+
+    assert result.sql is not None
+    assert result.sql.success is False
+    assert result.sql.sql == "SELECT invalid_sql"
+    assert result.sql.attempts == 0

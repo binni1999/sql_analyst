@@ -19,6 +19,9 @@ class AnalyticalContextExtractor:
         "ratings": "rating",
 
         "reviews": "reviews",
+        "total discount amount": "discount_amount",
+        "discount amount": "discount_amount",
+        "total discount": "discount_amount",
     }
 
     ENTITY_MAPPINGS = {
@@ -80,6 +83,19 @@ class AnalyticalContextExtractor:
 
         if aggregation:
             context.aggregation = aggregation
+	
+        # --------------------------------------------------------
+        # Grouping intent
+        # --------------------------------------------------------
+
+        if self._requires_grouping(normalized):
+            context.group_by_required = True
+        elif self._explicitly_requests_overall_aggregate(normalized):
+            context.group_by_required = False
+        elif previous_context is None:
+            context.group_by_required = False
+        # Otherwise preserve grouping intent for partial follow-ups such as
+        # "What about quantity?"; they modify the metric, not the grouping.
 
         # --------------------------------------------------------
         # Limit
@@ -189,48 +205,39 @@ class AnalyticalContextExtractor:
         # Explicit aggregation takes precedence.
 
         if any(
-            phrase in question
-            for phrase in [
-                "average",
-                "avg",
-                "mean",
-            ]
+            self._contains_phrase(question, phrase)
+            for phrase in ["average", "avg", "mean"]
         ):
             return "avg"
 
         if any(
-            phrase in question
-            for phrase in [
-                "count",
-                "number of",
-                "how many",
-            ]
+            self._contains_phrase(question, phrase)
+            for phrase in ["count", "number of", "how many"]
         ):
             return "count"
 
         if any(
-            phrase in question
-            for phrase in [
-                "maximum",
-                "maximum value",
-                "max",
-                "highest",
-        ]):
+            self._contains_phrase(question, phrase)
+            for phrase in ["maximum", "maximum value", "max"]
+        ) or (
+            self._contains_phrase(question, "highest")
+            and not self._requires_grouping(question)
+        ):
             return "max"
 
         if any(
-            phrase in question
-            for phrase in [
-                "minimum",
-                "minimum value",
-                "min",
-                "lowest",
-        ]):
+            self._contains_phrase(question, phrase)
+            for phrase in ["minimum", "minimum value", "min"]
+        ) or (
+            self._contains_phrase(question, "lowest")
+            and not self._requires_grouping(question)
+        ):
             return "min"
 
         if metric in {
             "revenue",
             "quantity",
+            "discount_amount",
         }:
             return "sum"
 
@@ -257,6 +264,8 @@ class AnalyticalContextExtractor:
             r"\bfirst\s+(\d+)\b",
             r"\blast\s+(\d+)\b",
             r"\b(\d+)\s+(?:best|worst)\b",
+            r"\b(?:which|show|list|find)\s+(\d+)\s+"
+            r"(?:products?|customers?|orders?)\b",
         ]
 
         for pattern in patterns:
@@ -284,6 +293,7 @@ class AnalyticalContextExtractor:
             "descending",
             "desc",
             "highest first",
+            "highest",
             "largest first",
             "top",
             "best",
@@ -294,6 +304,7 @@ class AnalyticalContextExtractor:
             "ascending",
             "asc",
             "lowest first",
+            "lowest",
             "smallest first",
             "bottom",
             "worst",
@@ -646,5 +657,46 @@ class AnalyticalContextExtractor:
             re.search(
                 rf"\b{escaped}\b",
                 question
+            )
+        )
+
+    # ============================================================
+    # GROUPING INTENT
+    # ============================================================
+
+    def _requires_grouping(self, question: str) -> bool:
+        grouping_patterns = [
+            # Explicit grouping dimensions: "revenue by product".
+            r"\bby\s+(?:city|country|category|status|"
+            r"product|products|customer|customers|"
+            r"month|year|day|region)\b",
+
+            # Ranked entities, including "Which 10 products have the
+            # highest total discount amount?".
+            r"\b(?:top|bottom|best|worst)\s+\d+\s+"
+            r"(?:products?|customers?|orders?)\b",
+            r"\b(?:which|show|list|find)\s+\d+\s+"
+            r"(?:products?|customers?|orders?)\b",
+            r"\b(?:highest|lowest|most|least)\b.*\b"
+            r"(?:products?|customers?|orders?)\b",
+
+            # Explicit per-entity requests.
+            r"\bfor\s+each\s+(?:city|country|category|"
+            r"status|product|customer|month|year|region)\b",
+            r"\bbreakdown\s+by\b",
+        ]
+        return any(re.search(pattern, question) for pattern in grouping_patterns)
+
+    @staticmethod
+    def _explicitly_requests_overall_aggregate(question: str) -> bool:
+        """Detect explicit scalar intent while allowing grouped metric queries."""
+        return any(
+            re.search(pattern, question)
+            for pattern in (
+                r"\boverall\b",
+                r"\bacross\s+all\b",
+                r"\bfor\s+all\b",
+                r"\bgrand\s+total\b",
+                r"\btotal\s+across\s+all\b",
             )
         )

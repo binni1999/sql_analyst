@@ -15,6 +15,7 @@ from prompts.sql_prompt import SQL_GENERATOR_SYSTEM_PROMPT
 from models.analytical_context import AnalyticalContext
 from models.business_knowledge import BusinessKnowledgeResult
 from services.observability import ObservabilityCallbackHandler
+from services.resilient_llm import build_resilient_chat_model
 
 
 load_dotenv()
@@ -46,17 +47,14 @@ class SQLGenerator:
 
     def __init__(self):
 
-        self.llm = ChatGroq(
-            model="openai/gpt-oss-120b",
+        primary_llm = ChatGroq(
+            model=os.getenv("GROQ_PRIMARY_MODEL", "openai/gpt-oss-120b"),
             api_key=GROQ_API_KEY,
+            max_retries=0,
             callbacks=[ObservabilityCallbackHandler()],
         )
-
-        self.structured_llm = (
-            self.llm.with_structured_output(
-                SQLGenerationResult
-            )
-        )
+        self.llm = build_resilient_chat_model(primary_llm)
+        self.structured_llm = self.llm.with_structured_output(SQLGenerationResult)
 
     def _build_business_knowledge_context(
         self,

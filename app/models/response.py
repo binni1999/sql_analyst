@@ -19,6 +19,8 @@ class DataAnalystResponse(BaseModel):
     result: dict[str, Any] | None = None
 
     error: str | list[str] | None = None
+    error_code: str | None = None
+    error_reference: str | None = None
 
     needs_clarification: bool = False
 

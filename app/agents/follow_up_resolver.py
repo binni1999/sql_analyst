@@ -1,7 +1,23 @@
+import re
+
 from models.conversation import ConversationState
 
-
 class FollowUpResolver:
+
+    FOLLOW_UP_PATTERNS = (
+        r"^(?:what about|how about|and|also|instead|sort|only|include|add|with)\b",
+        r"^(?:ascending|descending|asc|desc|highest first|lowest first|largest first|smallest first)\b",
+        r"^(?:(?:show\s+)?only\s+(?:the\s+)?)?(?:top|bottom)\s+\d+\s*$",
+        r"^(?:show\s+)?only\s+(?:the\s+)?(?:top|bottom)\s+\d+\b",
+    )
+
+    def is_follow_up(self, user_question: str) -> bool:
+        """Return whether the utterance is a contextual edit to the last turn."""
+        question = user_question.strip().lower()
+        return bool(question) and any(
+            re.search(pattern, question)
+            for pattern in self.FOLLOW_UP_PATTERNS
+        )
 
     METRIC_REPLACEMENTS = {
         "revenue": "revenue",
@@ -11,6 +27,9 @@ class FollowUpResolver:
         "units sold": "quantity",
         "rating": "rating",
         "reviews": "reviews",
+        "discount amount": "discount_amount",
+        "total discount": "discount_amount",
+        "discounts": "discount_amount",
     }
 
     SORT_REPLACEMENTS = {
@@ -36,6 +55,9 @@ class FollowUpResolver:
             raise ValueError(
                 "Follow-up question cannot be empty."
             )
+
+        if not self.is_follow_up(question):
+            raise ValueError("Question is not a contextual follow-up.")
 
         # Prefer the explicit conversation fields for backward
         # compatibility. Structured memory is the fallback source of truth
@@ -72,7 +94,21 @@ class FollowUpResolver:
             )
 
         # ----------------------------------
-        # 2. Sorting follow-up
+        # 2. Limit follow-up (top/bottom N)
+        # ----------------------------------
+
+        limit_match = re.search(
+            r"\b(top|bottom)\s+(\d+)\b", normalized
+        )
+        if limit_match:
+            return self._replace_limit(
+                previous_question,
+                limit_match.group(1),
+                int(limit_match.group(2)),
+            )
+
+        # ----------------------------------
+        # 3. Sorting follow-up
         # ----------------------------------
 
         sort_direction = self._detect_sort_direction(
@@ -86,7 +122,7 @@ class FollowUpResolver:
             )
 
         # ----------------------------------
-        # 3. Filter / time follow-up
+        # 4. Filter / time follow-up
         # ----------------------------------
 
         if self._is_filter_follow_up(normalized):
@@ -97,7 +133,7 @@ class FollowUpResolver:
             )
 
         # ----------------------------------
-        # 4. Generic contextual follow-up
+        # 5. Generic contextual follow-up
         # ----------------------------------
 
         return self._combine_questions(
@@ -153,9 +189,12 @@ class FollowUpResolver:
 
                 end = start + len(old)
 
+                metric_label = {
+                    "discount_amount": "discount amount",
+                }.get(metric, metric)
                 question = (
                     question[:start]
-                    + metric
+                    + metric_label
                     + question[end:]
                 )
 
@@ -168,6 +207,21 @@ class FollowUpResolver:
             f"{previous_question} "
             f"using {metric}"
         )
+
+    def _replace_limit(
+        self,
+        previous_question: str,
+        ranking: str,
+        limit: int,
+    ) -> str:
+        """Update an existing top/bottom N request without duplicating it."""
+        pattern = re.compile(r"\b(top|bottom)\s+\d+\b", re.IGNORECASE)
+        replacement = f"{ranking.lower()} {limit}"
+        if pattern.search(previous_question):
+            return pattern.sub(replacement, previous_question, count=1)
+
+        # A top/bottom follow-up can refine a previous unbounded ranking.
+        return f"{previous_question} ranked {ranking.lower()} {limit}"
 
     def _detect_sort_direction(
         self,

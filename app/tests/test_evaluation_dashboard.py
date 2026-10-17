@@ -58,3 +58,20 @@ def test_save_dashboard_writes_html(tmp_path: Path):
     assert output.exists()
     assert output.suffix == ".html"
     assert "sql_analyst_core" in output.read_text(encoding="utf-8")
+
+
+
+def test_dashboard_displays_latency_percentiles():
+    summary = _summary()
+    summary.p50_duration_ms = 100.0
+    summary.p95_duration_ms = 200.0
+    summary.p99_duration_ms = 250.0
+
+    html = render_evaluation_dashboard(summary)
+
+    assert "P50 latency" in html
+    assert "P95 latency" in html
+    assert "P99 latency" in html
+    assert "100.0 ms" in html
+    assert "200.0 ms" in html
+    assert "250.0 ms" in html

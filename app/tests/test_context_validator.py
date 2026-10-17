@@ -561,3 +561,66 @@ def test_schema_is_optional_and_existing_behavior_is_preserved():
 
     assert result.is_valid is True
     assert result.errors == []
+
+
+
+def test_overall_count_rejects_unrequested_grouping():
+    validator = ContextValidator()
+
+    requirements = SQLRequirements(
+        entity="customer",
+        aggregation="count",
+        group_by_required=False,
+    )
+
+    result = validator.validate(
+        """
+        SELECT customer_id, COUNT(*) AS customer_count
+        FROM customers
+        GROUP BY customer_id
+        """,
+        requirements,
+    )
+
+    assert result.is_valid is False
+    assert any(
+        "unrequested group by" in error.lower()
+        for error in result.errors
+    )
+
+
+
+def test_grouping_inside_cte_is_valid():
+    validator = ContextValidator()
+
+    requirements = SQLRequirements(
+        entity="product",
+        group_by_required=True,
+        limit=5,
+        sort_direction="desc",
+    )
+
+    sql = """
+    WITH rev AS (
+        SELECT
+            p.product_id,
+            p.product_name,
+            SUM(
+                oi.quantity * oi.unit_price * (1 - oi.discount)
+            ) AS revenue
+        FROM order_items oi
+        JOIN products p ON p.product_id = oi.product_id
+        GROUP BY p.product_id, p.product_name
+    )
+    SELECT
+        product_name,
+        ROUND(revenue, 2) AS revenue
+    FROM rev
+    ORDER BY revenue DESC
+    LIMIT 5
+    """
+
+    result = validator.validate(sql, requirements)
+
+    assert result.is_valid is True, result.errors
+    assert result.errors == []

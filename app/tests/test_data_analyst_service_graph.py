@@ -10,7 +10,8 @@ from models.state import AgentState
 from services.conversation_service import ConversationService
 from services.data_analyst_service import DataAnalystService
 from services.question_validator import QuestionValidator
-
+from services.observability import ObservabilityService
+from observability.metrics import metrics_registry
 
 class FakeGraph:
     def __init__(self, state: AgentState):
@@ -162,3 +163,178 @@ def test_service_preserves_follow_up_resolution_before_using_langgraph():
     assert len(graph.calls) == 2
     assert graph.calls[1][0] == "Show the bottom 3 products by revenue"
     follow_up_resolver.resolve.assert_called_once()
+
+
+def test_unrelated_question_resets_resolved_question_and_analytical_context():
+    graph = FakeGraph(successful_state())
+    service = create_service(graph)
+
+    first = service.ask(DataAnalystRequest(
+        question="Show the top 5 products by revenue"
+    ))
+    second = service.ask(DataAnalystRequest(
+        question="How many orders were placed in 2025?",
+        conversation_id=first.conversation_id,
+    ))
+
+    assert second.success is True
+    assert graph.calls[1][0] == "How many orders were placed in 2025?"
+    context = graph.calls[1][1]
+    assert context.entity == "order"
+    assert context.metric is None
+    assert context.limit is None
+    assert context.time_range["year"] == 2025
+
+    conversation = service.conversation_service.get(first.conversation_id)
+    assert conversation.resolved_question == "How many orders were placed in 2025?"
+
+
+def test_legitimate_follow_up_preserves_analytical_context():
+    graph = FakeGraph(successful_state())
+    service = create_service(graph)
+
+    first = service.ask(DataAnalystRequest(
+        question="Show the top 5 products by revenue"
+    ))
+    second = service.ask(DataAnalystRequest(
+        question="What about quantity?",
+        conversation_id=first.conversation_id,
+    ))
+
+    assert second.success is True
+    question, context = graph.calls[1]
+    assert question == "Show the top 5 products by quantity"
+    assert context.entity == "product"
+    assert context.metric == "quantity"
+    assert context.limit == 5
+
+
+def test_service_activates_observability_context_during_graph_run():
+    from services.observability import (
+        ObservabilityContext,
+        _CURRENT_CONTEXT,
+    )
+
+    graph = FakeGraph(successful_state())
+    original_run = graph.run
+    observed_contexts = []
+
+    def run_with_context_check(question, analytical_context=None):
+        context = _CURRENT_CONTEXT.get()
+        observed_contexts.append(context)
+
+        assert isinstance(context, ObservabilityContext)
+        assert context.conversation_id == "conversation-observability-test"
+
+        return original_run(question, analytical_context)
+
+    graph.run = run_with_context_check
+    service = create_service(graph)
+
+    response = service.ask(
+        DataAnalystRequest(
+            question="Show the top 5 products by revenue",
+            conversation_id="conversation-observability-test",
+        )
+    )
+
+    assert response.success is True
+    assert len(observed_contexts) == 1
+    assert _CURRENT_CONTEXT.get() is None
+
+
+def test_graph_execution_records_success_metrics():
+    metrics_registry.reset()
+    try:
+        graph = FakeGraph(successful_state())
+        service = create_service(graph)
+
+        state = service._run_graph(
+            "Show the top 5 products by revenue",
+            analytical_context=None,
+            conversation_id="graph-metrics-success",
+        )
+
+        snapshot = metrics_registry.snapshot()
+
+        assert state.success is True
+        assert snapshot["counters"]["agent.graph_executions"] == 1
+        assert snapshot["counters"]["agent.graph_successes"] == 1
+        assert snapshot["counters"].get("agent.graph_failures", 0) == 0
+        assert snapshot["timings"]["agent.graph_execution_ms"]["count"] == 1
+    finally:
+        metrics_registry.reset()
+
+
+def test_graph_execution_records_failure_metrics():
+    metrics_registry.reset()
+
+    class FailingGraph(FakeGraph):
+        def run(self, question, analytical_context=None):
+            raise RuntimeError("simulated graph failure")
+
+    try:
+        graph = FailingGraph(successful_state())
+        service = create_service(graph)
+
+        import pytest
+
+        with pytest.raises(RuntimeError, match="simulated graph failure"):
+            service._run_graph(
+                "Show the top 5 products by revenue",
+                analytical_context=None,
+                conversation_id="graph-metrics-failure",
+            )
+
+        snapshot = metrics_registry.snapshot()
+
+        assert snapshot["counters"]["agent.graph_executions"] == 1
+        assert snapshot["counters"].get("agent.graph_successes", 0) == 0
+        assert snapshot["counters"]["agent.graph_failures"] == 1
+        assert snapshot["timings"]["agent.graph_execution_ms"]["count"] == 1
+    finally:
+        metrics_registry.reset()
+
+from models.agent import AnalyticsResult, SQLResult
+from models.request import DataAnalystRequest
+from models.state import AgentState
+
+
+def test_service_returns_fallback_answer_with_failed_status():
+    fallback = (
+        "The query returned the following results:\n"
+        "- product_name: Bike"
+    )
+    state = AgentState(
+        question="Show products",
+        answer=fallback,
+        sql=SQLResult(success=True, sql="SELECT product_name FROM products"),
+        analytics=AnalyticsResult(
+            success=True,
+            analysis={
+                "columns": ["product_name"],
+                "rows": [["Bike"]],
+            },
+        ),
+        success=False,
+        error="Answer generation failed: provider rate limit",
+        execution_trace=[
+            {
+                "stage": "answer_generation",
+                "status": "failed",
+                "attempt": 0,
+                "message": "Answer generation failed.",
+                "metadata": {"exception_type": "RateLimitError"},
+            }
+        ],
+    )
+
+    service = create_service(FakeGraph(state))
+    response = service.ask(
+        DataAnalystRequest(question="Show products")
+    )
+
+    assert response.success is False
+    assert response.answer == fallback
+    assert "rate limit" in str(response.error).lower()
+    assert response.execution_trace[-1]["status"] == "failed"

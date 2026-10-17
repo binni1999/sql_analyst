@@ -51,6 +51,18 @@ IMPORTANT RULES:
 
 10. Use GROUP BY when required.
 
+10a. Distinguish scalar aggregates from grouped aggregates:
+    - For questions asking for one overall total or count,
+      return one aggregate result without GROUP BY unless
+      the user explicitly requests a breakdown.
+    - For questions asking for a breakdown by a dimension,
+      use GROUP BY on the requested dimension.
+    - Do not group by a primary key when the user asks for
+      one overall count of records.
+    - Do not add unnecessary grouping columns that change
+      the intended level of aggregation.
+
+
 11. Use ORDER BY when appropriate.
 
 12. Use LIMIT when the user asks for

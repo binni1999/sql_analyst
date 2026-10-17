@@ -438,6 +438,7 @@ class ObservabilityService:
             trace_id=trace_id or str(uuid.uuid4()),
             conversation_id=conversation_id,
         )
+
         token = _CURRENT_CONTEXT.set(context)
 
         try:

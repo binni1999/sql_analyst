@@ -1,3 +1,4 @@
+
 import sqlglot
 from sqlglot import exp
 
@@ -22,23 +23,38 @@ class SemanticValidator:
 
         requested_metrics = []
 
+        # "Sales" is ambiguous in ordinary business language: it can mean
+        # units sold or sales value. Treat it as revenue only when the user
+        # explicitly asks for revenue/value or uses the established phrase
+        # "total sales". In particular, "lowest sales" must not silently
+        # impose a revenue formula/alias requirement on a quantity-oriented
+        # ranking query.
+        import re
+        normalized_question = re.sub(r"[^a-z0-9]+", " ", question_lower).strip()
+        words = set(normalized_question.split())
+        explicit_revenue = bool(words.intersection({"revenue", "revenues"}))
+        explicit_sales_value = "sales value" in normalized_question
+        explicit_total_sales = "total sales" in normalized_question
+
         for metric, metadata in metric_metadata.items():
-
-            keywords = metadata.get(
-                "keywords",
-                []
-            )
-
+            keywords = metadata.get("keywords", [])
             for keyword in keywords:
+                normalized_keyword = re.sub(r"[^a-z0-9]+", " ", keyword.lower()).strip()
+                if not normalized_keyword:
+                    continue
 
-                if keyword.lower() in question_lower:
+                # Do not let the broad metadata keyword "sales" match every
+                # question containing sales. More specific phrases remain valid.
+                if metric == "revenue" and normalized_keyword == "sales":
+                    matched = explicit_revenue or explicit_sales_value or explicit_total_sales
+                else:
+                    matched = normalized_keyword in normalized_question
 
+                if matched:
                     requested_metrics.append(metric)
-
                     break
 
         return requested_metrics
-
 
     # ---------------------------------------------------------
     # Normalize SQL expressions
@@ -66,10 +82,10 @@ class SemanticValidator:
 
         return expression
 
-    
     # ---------------------------------------------------------
     # Parse metric formula
     # ---------------------------------------------------------
+
     def parse_formula(
         self,
         formula: str
@@ -85,54 +101,60 @@ class SemanticValidator:
 
         return expression.expressions[0]
 
-# ---------------------------------------------------------
-    #Formula compasrison 
+    # ---------------------------------------------------------
+    # Formula comparison
+    # ---------------------------------------------------------
 
-# ---------------------------------------------------------
     def formulas_match(
         self,
         generated_expression,
         expected_formula: str
     ):
         """
-        Compare the generated metric expression
-        with the expected metric formula.
+        Compare a generated metric expression with its
+        metadata formula, allowing ROUND(expression, 2)
+        as a presentation wrapper.
         """
 
         try:
 
-            expected_expression = (
-                self.parse_formula(
-                    expected_formula
-                )
+            expected_expression = self.parse_formula(
+                expected_formula
             )
 
-            generated_normalized = (
-                self.normalize_expression(
-                    generated_expression
-                )
+            generated_normalized = self.normalize_expression(
+                generated_expression
             )
 
-            expected_normalized = (
-                self.normalize_expression(
-                    expected_expression
-                )
+            expected_normalized = self.normalize_expression(
+                expected_expression
             )
+
+            # Ignore only a ROUND(..., 2) presentation wrapper.
+            if isinstance(generated_normalized, exp.Round):
+
+                precision = generated_normalized.args.get(
+                    "decimals"
+                )
+
+                if (
+                    isinstance(precision, exp.Literal)
+                    and not precision.is_string
+                    and precision.this == "2"
+                ):
+
+                    generated_normalized = (
+                        generated_normalized.this
+                    )
 
             return (
-                generated_normalized.sql(
-                    dialect="postgres"
-                )
-                ==
-                expected_normalized.sql(
-                    dialect="postgres"
-                )
+                generated_normalized.sql(dialect="postgres")
+                == expected_normalized.sql(dialect="postgres")
             )
 
         except Exception:
-
             return False
-    
+
     # ---------------------------------------------------------
     # Find metric aliases in SQL
     # ---------------------------------------------------------
@@ -162,11 +184,32 @@ class SemanticValidator:
             if not alias_name:
                 continue
 
-            if alias_name.lower() in metric_aliases:
+            if alias_name.lower() not in metric_aliases:
+                continue
 
-                matches.append(
-                    alias.this
+            expression = alias.this
+
+            # Skip only a ROUND presentation wrapper that
+            # references an already-computed metric alias.
+            #
+            # Do not skip formulas such as:
+            # SUM(oi.quantity) AS total_quantity
+            #
+            # These are actual metric definitions, even when
+            # their source columns have the same name as the
+            # requested metric.
+            references_existing_metric = (
+                isinstance(expression, exp.Round)
+                and any(
+                    column.name.lower() in metric_aliases
+                    for column in expression.find_all(exp.Column)
                 )
+            )
+
+            if references_existing_metric:
+                continue
+
+            matches.append(expression)
 
         return matches
 
@@ -242,10 +285,12 @@ class SemanticValidator:
             )
 
             if not metadata:
+
                 errors.append(
                     f"No metadata definition found "
                     f"for metric '{metric}'."
                 )
+
                 continue
 
             expressions = (
@@ -345,7 +390,7 @@ class SemanticValidator:
 
         errors = []
 
-        # Parse SQL first
+        # Parse SQL first.
         try:
 
             sqlglot.parse_one(
@@ -363,21 +408,21 @@ class SemanticValidator:
                 ]
             }
 
-        # Validate metrics reported by LLM
+        # Validate metrics reported by the LLM.
         errors.extend(
             self.validate_reported_metrics(
                 metrics_used
             )
         )
 
-        # Detect metrics from user's question
+        # Detect metrics from the user's question.
         requested_metrics = (
             self.detect_requested_metrics(
                 question
             )
         )
 
-        # Validate requested metrics
+        # Validate requested metrics.
         errors.extend(
             self.validate_metrics(
                 sql=sql,

@@ -1,3 +1,8 @@
+﻿import logging
+import uuid
+
+logger = logging.getLogger(__name__)
+
 
 # pyrefly: ignore [missing-import]
 
@@ -10,7 +15,7 @@ from graph.workflow import DataAnalystGraph
 from models.response import DataAnalystResponse
 from models.state import AgentState
 from models.request import DataAnalystRequest
-
+from observability.metrics import metrics_registry
 from services.question_validator import QuestionValidator
 from services.conversation_service import ConversationService
 from agents.clarification_resolver import ClarificationResolver
@@ -18,9 +23,11 @@ from agents.follow_up_resolver import FollowUpResolver
 from agents.analytical_context_extractor import (
     AnalyticalContextExtractor
 )
+from services.observability import ObservabilityService
 from services.execution_summary import ExecutionSummaryService
 from services.memory_service import ConversationMemoryService
 from security.input_guardrails import PromptInjectionGuardrail
+from security.data_access_guardrail import DataAccessGuardrail
 
 class DataAnalystService:
 
@@ -35,6 +42,8 @@ class DataAnalystService:
         tool_executor=None,
         memory_service: ConversationMemoryService | None = None,
         prompt_guardrail: PromptInjectionGuardrail | None = None,
+        data_access_guardrail: DataAccessGuardrail | None = None,
+        observability_service: ObservabilityService | None = None,
     ):
         self.graph = graph
         self.question_validator = question_validator
@@ -50,12 +59,18 @@ class DataAnalystService:
         self.analytical_context_extractor = (
             analytical_context_extractor
         )
+
+        self.observability_service = (
+            observability_service or ObservabilityService()
+        )
         # Optional Step 58 capability. The existing graph does not invoke it;
         # callers may opt into model-selected tools without changing SQLAgent.
         self.tool_executor = tool_executor
         # Step 67.5: input-layer prompt-injection defense. Keep this optional
         # for backward compatibility with existing service test doubles.
         self.prompt_guardrail = prompt_guardrail or PromptInjectionGuardrail()
+        # Enforce data-access policy before any graph/LLM/SQL execution.
+        self.data_access_guardrail = data_access_guardrail or DataAccessGuardrail()
 
         # Step 63: explicit conversation-memory layer. Keep this optional so
         # existing unit-test doubles and callers remain backward compatible.
@@ -95,13 +110,8 @@ class DataAnalystService:
             None,
         )
         if not conversation.waiting_for_human_approval and get_checkpoint_state:
-            print("\n========== CHECKPOINT RECOVERY DIAGNOSTIC ==========")
-            print("CONVERSATION ID:", conversation_id)
-
             try:
                 checkpoint_state = get_checkpoint_state(conversation_id)
-
-                print("CHECKPOINT STATE:", checkpoint_state)
 
                 if checkpoint_state is not None:
                     checkpoint_agent_state = checkpoint_state.get("agent_state")
@@ -110,41 +120,9 @@ class DataAnalystService:
                         False,
                     )
 
-                    print(
-                        "CHECKPOINT AGENT STATE:",
-                        checkpoint_agent_state,
-                    )
-                    print(
-                        "CHECKPOINT INTERRUPTED:",
-                        checkpoint_interrupted,
-                    )
-
-                    if checkpoint_agent_state is not None:
-                        print(
-                            "HUMAN APPROVAL STATUS:",
-                            checkpoint_agent_state.human_approval_status,
-                        )
-                        print(
-                            "HUMAN APPROVAL REQUIRED:",
-                            checkpoint_agent_state.human_approval_required,
-                        )
-                        print(
-                            "CURRENT STEP:",
-                            checkpoint_agent_state.current_step,
-                        )
-                        print(
-                            "QUESTION:",
-                            checkpoint_agent_state.question,
-                        )
-
-                    # IMPORTANT:
-                    # When LangGraph pauses inside interrupt(), the node has
-                    # not returned its updated AgentState yet. Therefore the
-                    # persisted AgentState can still show
-                    # human_approval_status=NOT_REQUIRED and current_step=SQL.
-                    #
-                    # The durable source of truth for a paused HITL workflow
-                    # is the LangGraph checkpoint's active interrupt/task.
+                    # When LangGraph pauses inside interrupt(), the persisted
+                    # AgentState may not yet reflect the pending approval.
+                    # The active checkpoint interrupt is the source of truth.
                     if (
                         checkpoint_agent_state is not None
                         and checkpoint_interrupted
@@ -155,28 +133,8 @@ class DataAnalystService:
                         )
                         self.conversation_service.save(conversation)
 
-                        print(
-                            "CHECKPOINT RECOVERY: HITL INTERRUPT RECOVERED"
-                        )
-                    elif checkpoint_agent_state is not None:
-                        print(
-                            "CHECKPOINT RECOVERY: STATE EXISTS "
-                            "BUT IS NOT AN ACTIVE HITL INTERRUPT"
-                        )
-                else:
-                    print("CHECKPOINT RECOVERY: NO CHECKPOINT FOUND")
-
-            except Exception as exc:
-                print(
-                    "CHECKPOINT RECOVERY ERROR:",
-                    type(exc).__name__,
-                    str(exc),
-                )
+            except Exception:
                 raise
-
-            print("====================================================\n")
-
-        # ----------------------------------
         # 2. Add user message to history
         # ----------------------------------
         # A pending HITL response may be a short command such as
@@ -329,6 +287,7 @@ class DataAnalystService:
                 sql=None,
                 result=None,
                 error=validation["errors"],
+                error_code="INVALID_QUESTION",
                 execution_trace=[]
             )
 
@@ -355,6 +314,31 @@ class DataAnalystService:
                 question=request.question,
                 conversation_id=conversation_id,
                 error=security_errors,
+                execution_trace=[],
+            )
+
+        # ----------------------------------
+        # 4c. Data-access confidentiality policy
+        # ----------------------------------
+        # This check must run before clarification resolution or graph invocation,
+        # so a blocked request cannot reach SQL generation, repair, or execution.
+        access_policy = self.data_access_guardrail.validate(request.question)
+        if not access_policy.allowed:
+            self.conversation_service.add_message(
+                conversation_id=conversation_id,
+                role="assistant",
+                content=access_policy.reason or "Request denied by data-access policy.",
+            )
+            return DataAnalystResponse(
+                success=False,
+                question=request.question,
+                conversation_id=conversation_id,
+                answer=None,
+                sql=None,
+                result=None,
+                error=access_policy.reason or "Request denied by data-access policy.",
+                error_code="REQUEST_BLOCKED",
+                # pyrefly: ignore[unbound-name]
                 execution_trace=[],
             )
 
@@ -418,7 +402,8 @@ class DataAnalystService:
                     clarification_options=(
                         clarification_options
                     ),
-                    execution_trace=[],
+                    # pyrefly: ignore[unbound-name]
+                    execution_trace=state.execution_trace or [],
                     
                 )
 
@@ -471,15 +456,27 @@ class DataAnalystService:
                 len(conversation.history) > 1
             )
 
+            is_follow_up = False
             if has_previous_context:
 
                 try:
-
+                    classifier = getattr(
+                        self.follow_up_resolver,
+                        "is_follow_up",
+                        None,
+                    )
+                    is_follow_up = (
+                        bool(classifier(request.question))
+                        if classifier is not None
+                        else True
+                    )
                     resolved_question = (
                         self.follow_up_resolver.resolve(
                             conversation,
                             request.question
                         )
+                        if is_follow_up
+                        else request.question
                     )
 
                 except ValueError:
@@ -492,6 +489,7 @@ class DataAnalystService:
                     resolved_question = (
                         request.question
                     )
+                    is_follow_up = False
 
             else:
 
@@ -510,7 +508,8 @@ class DataAnalystService:
 
             self._update_analytical_context(
                 conversation,
-                resolved_question
+                resolved_question,
+                preserve_previous=is_follow_up,
             )
 
             # ----------------------------------
@@ -634,19 +633,29 @@ class DataAnalystService:
                 content=error_message
             )
 
+            # Keep a deterministic fallback answer only when answer generation
+            # failed after analysis succeeded. Do not expose partial answers for
+            # SQL, schema, authorization, or execution failures.
+            error_text = str(state.error or "").lower()
+            fallback_answer = None
+            if (
+                state.answer
+                and state.analytics is not None
+                and "answer generation failed" in error_text
+            ):
+                fallback_answer = state.answer
+
             return DataAnalystResponse(
                 success=False,
                 question=request.question,
                 conversation_id=conversation_id,
-                answer=None,
-                sql=(
-                    state.sql.sql
-                    if state.sql and state.sql.sql
-                    else None
-                ),
+                answer=fallback_answer,
+                sql=None,
                 result=None,
-                error=state.error,
-                execution_trace=state.execution_trace,
+                error=self._safe_error_message(state.error),
+                error_code=self._classify_error(state.error),
+                error_reference=self._error_reference(),
+                execution_trace=state.execution_trace or [],
                 execution_summary=execution_summary,
             )
 
@@ -701,6 +710,21 @@ class DataAnalystService:
         # 10. Successful response
         # ----------------------------------
 
+        # return DataAnalystResponse(
+        #     success=True,
+        #     question=request.question,
+        #     conversation_id=conversation_id,
+        #     answer=answer,
+        #     sql=sql,
+        #     result=result,
+        #     error=None,
+        #     needs_clarification=False,
+        #     clarification_question=None,
+        #     clarification_options=[],
+        #     execution_trace=state.execution_trace or [],
+        #     execution_summary=execution_summary,
+        # )
+
         return DataAnalystResponse(
             success=True,
             question=request.question,
@@ -712,40 +736,105 @@ class DataAnalystService:
             needs_clarification=False,
             clarification_question=None,
             clarification_options=[],
-            execution_trace=state.execution_trace,
+            execution_trace=state.execution_trace or [],
             execution_summary=execution_summary,
         )
 
 
-    def _run_graph(
-        self,
-        question: str,
-        analytical_context,
-        conversation_id: str,
-    ):
-        kwargs = {
-            "analytical_context": analytical_context,
-        }
 
-        # Existing test doubles and non-persistent callers keep the Step 60
-        # signature. The production DataAnalystGraph enables the durable
-        # thread_id only when a checkpointer is configured.
+    
+    @staticmethod
+    def _error_reference() -> str:
+        return uuid.uuid4().hex[:10].upper()
+
+    @staticmethod
+    def _classify_error(error) -> str:
+        text = str(error or "").lower()
+        if any(term in text for term in ("429", "rate limit", "too many requests", "timeout", "timed out", "temporarily unavailable", "connection reset")):
+            return "LLM_PROVIDER_UNAVAILABLE"
+        if any(term in text for term in ("unknown column", "column not found", "does not exist", "unknown table", "relation")):
+            return "SCHEMA_VALIDATION_FAILED"
+        if any(term in text for term in ("security", "not allowed", "permission denied", "rejected by")):
+            return "REQUEST_BLOCKED"
+        if any(term in text for term in ("sql", "generation", "query")):
+            return "SQL_GENERATION_FAILED"
+        return "ANALYSIS_FAILED"
+
+    @staticmethod
+    def _safe_error_message(error) -> str:
+        code = DataAnalystService._classify_error(error)
+        messages = {
+            "LLM_PROVIDER_UNAVAILABLE": (
+                "Our analysis service is temporarily unavailable due to a "
+                "provider rate limit or temporary outage. Please try again shortly."
+            ),
+            "SCHEMA_VALIDATION_FAILED": "We couldn't find a requested table or column in your database. Check the name and try again.",
+            "REQUEST_BLOCKED": "This request couldn't be completed because it doesn't meet the data-access or security policy.",
+            "SQL_GENERATION_FAILED": "We couldn't turn your question into a valid database query. Try rephrasing it.",
+            "ANALYSIS_FAILED": "Something went wrong while analyzing your question. Please try again.",
+        }
+        return messages[code]
+
+    def _run_graph(self, question, analytical_context, conversation_id):
+        kwargs = {"analytical_context": analytical_context}
         if getattr(self.graph, "checkpointer", None) is not None:
             kwargs["conversation_id"] = conversation_id
 
-        return self.graph.run(question, **kwargs)
+        state = None
+        graph_succeeded = False
+
+        metrics_registry.increment("agent.graph_executions")
+
+        try:
+            with metrics_registry.timer("agent.graph_execution_ms"):
+                with self.observability_service.capture(
+                    conversation_id=conversation_id,
+                ) as observability_context:
+                    try:
+                        state = self.graph.run(question, **kwargs)
+                        graph_succeeded = bool(
+                            getattr(state, "success", False)
+                        )
+                        return state
+                    except Exception:
+                        # Log detailed diagnostics, but let the service caller
+                        # decide how to handle the failure. Re-raising preserves
+                        # the graph execution contract and makes failures visible
+                        # to callers/tests instead of disguising them as a normal
+                        # AgentState failure.
+                        logger.exception(
+                            "DataPilot graph execution failed",
+                            extra={"conversation_id": conversation_id},
+                        )
+                        raise
+                    finally:
+                        observability_context.summary(
+                            execution_trace=getattr(
+                                state, "execution_trace", None
+                            )
+                        )
+        finally:
+            metrics_registry.increment(
+                "agent.graph_successes"
+                if graph_succeeded
+                else "agent.graph_failures"
+            )
+
 
 
     def _update_analytical_context(
         self,
         conversation,
-        resolved_question: str
+        resolved_question: str,
+        preserve_previous: bool = True,
     ):
         context = (
             self.analytical_context_extractor.extract(
                 question=resolved_question,
                 previous_context=(
                     conversation.analytical_context
+                    if preserve_previous
+                    else None
                 )
             )
         )
@@ -757,3 +846,4 @@ class DataAnalystService:
         )
 
         return context
+

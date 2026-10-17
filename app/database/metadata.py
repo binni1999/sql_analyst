@@ -110,5 +110,17 @@ METRIC_METADATA = {
         "units sold",
         "number of units"
     ]
-}
+},
+    "discount_amount": {
+        "description": (
+            "Total monetary discount applied to order-item lines. The discount "
+            "column stores a decimal rate, so the amount is quantity multiplied "
+            "by unit price and the discount rate."
+        ),
+        "formula": "SUM(quantity * unit_price * discount)",
+        "formula_type": "sql_expression",
+        "tables": ["order_items"],
+        "required_columns": ["quantity", "unit_price", "discount"],
+        "keywords": ["discount amount", "total discount", "total discount amount"],
+    },
 }

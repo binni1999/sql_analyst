@@ -163,3 +163,62 @@ def test_ask_ambiguous_question():
     assert data["sql"] is None
 
     assert data["answer"] is None
+
+
+
+from fastapi import FastAPI, Request
+from fastapi.testclient import TestClient
+
+
+def test_request_id_is_returned_to_client():
+    response = client.get(
+        "/health",
+        headers={"X-Request-ID": "test-request-123"},
+    )
+
+    assert response.status_code == 200
+    assert response.headers["X-Request-ID"] == "test-request-123"
+
+
+def test_request_id_is_generated_when_missing():
+    response = client.get("/health")
+
+    assert response.status_code == 200
+    assert response.headers.get("X-Request-ID")
+
+
+
+def test_unexpected_exception_returns_server_error():
+    test_app = FastAPI()
+
+    @test_app.get("/test-error")
+    def trigger_error():
+        raise RuntimeError("Simulated internal failure")
+
+    test_client = TestClient(
+        test_app,
+        raise_server_exceptions=False,
+    )
+
+    response = test_client.get("/test-error")
+
+    assert response.status_code == 500
+
+
+
+def test_metrics_registry_tracks_server_error_metrics():
+    # pyrefly: ignore [missing-import]
+    from observability.metrics import MetricsRegistry
+
+    registry = MetricsRegistry()
+
+    registry.increment("http.requests")
+    registry.increment("http.server_errors")
+    registry.observe("http.request_ms", 25.0)
+
+    snapshot = registry.snapshot()
+
+    assert snapshot["counters"]["http.requests"] == 1
+    assert snapshot["counters"]["http.server_errors"] == 1
+    assert snapshot["timings"]["http.request_ms"]["count"] == 1
+    assert snapshot["timings"]["http.request_ms"]["total_ms"] == 25.0

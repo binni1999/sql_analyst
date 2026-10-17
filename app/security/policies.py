@@ -5,8 +5,41 @@ from dataclasses import dataclass, field
 class SQLSecurityPolicy:
     """Configurable security policy for SQL execution."""
 
-    allowed_tables: frozenset[str] | None = None
+    allowed_tables: frozenset[str] = field(
+        default_factory=lambda: frozenset(
+            {
+                "customers",
+                "products",
+                "orders",
+                "order_items",
+                "payments",
+                "reviews",
+            }
+        )
+    )
     allowed_columns: dict[str, frozenset[str]] = field(default_factory=dict)
+    allowed_schemas: frozenset[str] = field(
+        default_factory=lambda: frozenset({"public"})
+    )
+    blocked_functions: frozenset[str] = field(
+        default_factory=lambda: frozenset(
+            {
+                "pg_sleep",
+                "pg_sleep_for",
+                "pg_sleep_until",
+                "pg_read_file",
+                "pg_read_binary_file",
+                "pg_ls_dir",
+                "pg_stat_file",
+                "pg_logdir_ls",
+                "lo_import",
+                "lo_export",
+                "dblink_connect",
+                "dblink_connect_u",
+                "dblink_exec",
+            }
+        )
+    )
 
     max_joins: int = 5
     max_subqueries: int = 5
@@ -16,10 +49,16 @@ class SQLSecurityPolicy:
     require_limit_for_large_result: bool = True
     max_result_rows: int = 1_000
     query_timeout_ms: int = 10_000
+    max_query_cost: float = 100_000.0
+    max_plan_rows: int = 1_000_000
+    enable_query_cost_check: bool = True
 
     allow_cte: bool = True
     allow_subqueries: bool = True
 
+    enable_query_cost_check: bool = True
+    max_query_cost: float = 100_000.0
+    max_plan_rows: int = 1_000_000
     sensitive_columns: dict[str, frozenset[str]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -33,6 +72,12 @@ class SQLSecurityPolicy:
             raise ValueError("max_result_rows must be greater than zero")
         if self.query_timeout_ms <= 0:
             raise ValueError("query_timeout_ms must be greater than zero")
+
+        if self.max_query_cost <= 0:
+            raise ValueError("max_query_cost must be greater than zero")
+
+        if self.max_plan_rows <= 0:
+            raise ValueError("max_plan_rows must be greater than zero")
 
     @staticmethod
     def _normalize_names(values):
@@ -54,3 +99,9 @@ class SQLSecurityPolicy:
             table.lower(): self._normalize_names(columns)
             for table, columns in self.sensitive_columns.items()
         }
+
+    def normalized_allowed_schemas(self) -> frozenset[str]:
+        return self._normalize_names(self.allowed_schemas)
+
+    def normalized_blocked_functions(self) -> frozenset[str]:
+        return self._normalize_names(self.blocked_functions)

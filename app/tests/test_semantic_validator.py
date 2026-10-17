@@ -304,3 +304,71 @@ def test_invalid_sql():
         "parse" in error.lower()
         for error in result["errors"]
     )
+
+def test_ambiguous_lowest_sales_does_not_force_revenue_metric():
+    validator = create_validator()
+
+    # The question does not specify sales value/revenue. SQL may rank products
+    # by quantity sold, so the semantic validator must not demand a revenue alias.
+    sql = """
+    SELECT p.product_id, p.product_name, SUM(oi.quantity) AS total_quantity
+    FROM order_items oi
+    JOIN products p ON p.product_id = oi.product_id
+    GROUP BY p.product_id, p.product_name
+    ORDER BY total_quantity ASC
+    LIMIT 5;
+    """
+
+    result = validator.validate(
+        question="Which products have the lowest sales?",
+        sql=sql,
+        metrics_used=["quantity"],
+    )
+
+    assert result["is_valid"] is True
+    assert result["errors"] == []
+
+
+def test_percentage_of_total_revenue_still_requires_revenue_metric():
+    validator = create_validator()
+    sql = """
+    SELECT p.product_name,
+           SUM(oi.quantity * oi.unit_price * (1 - oi.discount)) AS revenue
+    FROM order_items oi
+    JOIN products p ON p.product_id = oi.product_id
+    GROUP BY p.product_name
+    ORDER BY revenue DESC
+    LIMIT 5;
+    """
+
+    result = validator.validate(
+        question="What percentage of total revenue comes from the top 5 products?",
+        sql=sql,
+        metrics_used=["revenue"],
+    )
+
+    assert result["is_valid"] is True
+    assert result["errors"] == []
+
+
+def test_valid_discount_amount_uses_monetary_discount_formula():
+    validator = create_validator()
+    question = "Which 10 products have generated the highest total discount amount?"
+    sql = """
+    SELECT
+        p.product_id,
+        p.product_name,
+        SUM(oi.quantity * oi.unit_price * oi.discount) AS discount_amount
+    FROM order_items oi
+    JOIN products p ON p.product_id = oi.product_id
+    GROUP BY p.product_id, p.product_name
+    ORDER BY discount_amount DESC
+    LIMIT 10
+    """
+    result = validator.validate(
+        question=question,
+        sql=sql,
+        metrics_used=["discount_amount"],
+    )
+    assert result["is_valid"] is True
+    assert result["errors"] == []

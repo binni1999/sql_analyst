@@ -130,11 +130,13 @@ function ExecutionTrace({ executionTrace }) {
                                     </span>
                                 </div>
 
-                                {event.duration_ms !== undefined && (
+
+                                {event.duration_ms != null && Number.isFinite(Number(event.duration_ms)) && (
                                     <span className="trace-duration">
-                                        {event.duration_ms.toFixed(2)} ms
+                                        {Number(event.duration_ms).toFixed(2)} ms
                                     </span>
                                 )}
+
                             </div>
 
                             {event.message && (

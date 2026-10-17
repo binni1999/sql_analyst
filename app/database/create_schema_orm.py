@@ -32,12 +32,19 @@ try:
 except ImportError:
     from app.config import get_settings
 
-DATABASE_URL = get_settings().database_url
+settings = get_settings()
+
+DATABASE_URL = settings.database_url
 
 
-# Create engine
-engine = create_engine(DATABASE_URL, echo=False)  # Set echo=True to see SQL logs
-
+# Create SQLAlchemy engine with production-style connection pooling.
+engine = create_engine(
+    DATABASE_URL,
+    echo=False,
+    pool_size=settings.db_pool_size,
+    max_overflow=settings.db_max_overflow,
+    pool_pre_ping=settings.db_pool_pre_ping,
+)
 # Base class for all models
 Base = declarative_base()
 

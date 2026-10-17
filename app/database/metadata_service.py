@@ -1,3 +1,4 @@
+# pyrefly: ignore [missing-import]
 from database.metadata import (
     COLUMN_METADATA,
     METRIC_METADATA

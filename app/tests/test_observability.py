@@ -3,13 +3,17 @@ import json
 import logging
 import os
 from uuid import uuid4
+from concurrent.futures import ThreadPoolExecutor
 
+from types import SimpleNamespace
+
+from services.observability import ObservabilityService
 from models.observability import ObservabilitySummary
 from services.observability import (
     ObservabilityContext,
     JsonObservabilityFormatter,
+    ObservabilityService,
 )
-
 
 def test_observability_context_records_llm_usage(monkeypatch):
     monkeypatch.setenv("OBSERVABILITY_INPUT_COST_PER_1M", "1")
@@ -237,3 +241,197 @@ def test_observability_model_aggregation_tracks_failed_calls():
     assert model.successful_calls == 1
     assert model.failed_calls == 1
 
+
+def test_capture_preserves_conversation_id():
+    service = ObservabilityService()
+
+    with service.capture(
+        conversation_id="conversation-123",
+        trace_id="trace-123",
+    ) as context:
+        assert context.trace_id == "trace-123"
+        assert context.conversation_id == "conversation-123"
+
+    summary = context.summary()
+
+    assert summary.trace_id == "trace-123"
+    assert summary.conversation_id == "conversation-123"
+
+
+
+
+
+
+def test_callback_records_llm_token_usage():
+
+
+    service = ObservabilityService()
+    handler = service.callback_handler
+    run_id = uuid4()
+
+    with service.capture(
+        conversation_id="token-telemetry-test"
+    ) as context:
+        handler.on_llm_start(
+            serialized={
+                "name": "fake-model",
+                "kwargs": {"model": "fake-model"},
+            },
+            prompts=["A fake prompt"],
+            run_id=run_id,
+        )
+
+        handler.on_llm_end(
+            response=SimpleNamespace(
+                llm_output={
+                    "token_usage": {
+                        "prompt_tokens": 10,
+                        "completion_tokens": 5,
+                        "total_tokens": 15,
+                    }
+                }
+            ),
+            run_id=run_id,
+            model="fake-model",
+        )
+
+        assert len(context.llm_calls) == 1
+
+        call = context.llm_calls[0]
+        assert call.input_tokens == 10
+        assert call.output_tokens == 5
+        assert call.total_tokens == 15
+        assert call.success is True
+
+        summary = context.summary()
+
+        assert summary.model_calls == 1
+        assert summary.successful_model_calls == 1
+        assert summary.failed_model_calls == 0
+
+        assert summary.llm_calls[0].input_tokens == 10
+        assert summary.llm_calls[0].output_tokens == 5
+        assert summary.llm_calls[0].total_tokens == 15
+
+
+
+def test_concurrent_requests_keep_observability_context_isolated():
+    service = ObservabilityService()
+
+    def run_request(conversation_id, stage_name):
+        with service.capture(conversation_id=conversation_id) as context:
+            with context.stage(stage_name):
+                run_id = uuid4()
+
+                service.callback_handler.on_llm_start(
+                    serialized={
+                        "name": "fake-model",
+                        "kwargs": {"model": "fake-model"},
+                    },
+                    prompts=["Test prompt"],
+                    run_id=run_id,
+                )
+
+                service.callback_handler.on_llm_end(
+                    response=SimpleNamespace(
+                        llm_output={
+                            "token_usage": {
+                                "prompt_tokens": 10,
+                                "completion_tokens": 5,
+                                "total_tokens": 15,
+                            }
+                        }
+                    ),
+                    run_id=run_id,
+                    model="fake-model",
+                )
+
+            return context.summary()
+
+    requests = [
+        ("conversation-A", "sql_agent"),
+        ("conversation-B", "answer_generation"),
+    ]
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        summaries = list(
+            executor.map(
+                lambda args: run_request(*args),
+                requests,
+            )
+        )
+
+    by_conversation = {
+        summary.conversation_id: summary for summary in summaries
+    }
+
+    assert set(by_conversation) == {
+        "conversation-A",
+        "conversation-B",
+    }
+
+    sql_summary = by_conversation["conversation-A"]
+    answer_summary = by_conversation["conversation-B"]
+
+    assert len(sql_summary.llm_calls) == 1
+    assert sql_summary.llm_calls[0].stage == "sql_agent"
+    assert sql_summary.total_tokens == 15
+
+    assert len(answer_summary.llm_calls) == 1
+    assert answer_summary.llm_calls[0].stage == "answer_generation"
+    assert answer_summary.total_tokens == 15
+
+    assert len(sql_summary.stages) == 1
+    assert sql_summary.stages[0].stage == "sql_agent"
+
+    assert len(answer_summary.stages) == 1
+    assert answer_summary.stages[0].stage == "answer_generation"
+
+
+
+def test_observability_stage_records_failure_and_restores_context():
+    from services.observability import _CURRENT_STAGE
+
+    service = ObservabilityService()
+
+    with service.capture(conversation_id="failed-stage-test") as context:
+        assert _CURRENT_STAGE.get() is None
+
+        try:
+            with context.stage("sql_agent"):
+                assert _CURRENT_STAGE.get() == "sql_agent"
+                raise ValueError("Simulated SQL-agent failure")
+        except ValueError:
+            pass
+
+        assert _CURRENT_STAGE.get() is None
+
+    summary = context.summary()
+
+    assert len(summary.stages) == 1
+    assert summary.stages[0].stage == "sql_agent"
+    assert summary.stages[0].status == "failed"
+
+
+def test_observability_stage_records_graph_interruption():
+    from services.observability import _CURRENT_STAGE
+
+    class GraphInterrupt(Exception):
+        pass
+
+    service = ObservabilityService()
+
+    with service.capture(conversation_id="interrupted-stage-test") as context:
+        try:
+            with context.stage("sql_agent"):
+                raise GraphInterrupt("Simulated graph interruption")
+        except GraphInterrupt:
+            pass
+
+        assert _CURRENT_STAGE.get() is None
+
+    summary = context.summary()
+
+    assert len(summary.stages) == 1
+    assert summary.stages[0].stage == "sql_agent"
+    assert summary.stages[0].status == "interrupted"

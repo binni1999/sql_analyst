@@ -38,6 +38,10 @@ class Settings(BaseSettings):
         ...,
         description="SQLAlchemy PostgreSQL connection URL.",
     )
+    readonly_database_url: str | None = Field(
+        default=None,
+        description="PostgreSQL URL used exclusively for AI-generated SQL.",
+    )
     langgraph_checkpoint_db_url: str | None = Field(
         default=None,
         description="PostgreSQL URL used by LangGraph checkpoints.",
@@ -47,6 +51,8 @@ class Settings(BaseSettings):
 
     redis_url: str = "redis://localhost:6379/0"
     redis_cache_ttl_seconds: int = 300
+    redis_max_connections: int = 20
+    redis_schema_cache_version: str = "v1"
 
     groq_api_key: str | None = None
     openai_api_key: str | None = None

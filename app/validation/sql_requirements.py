@@ -33,8 +33,7 @@ class SQLRequirementsBuilder:
             return SQLRequirements()
 
         entity = analytical_context.entity
-
-        group_by_required = entity is not None
+        group_by_required = analytical_context.group_by_required
 
         return SQLRequirements(
             metric=analytical_context.metric,

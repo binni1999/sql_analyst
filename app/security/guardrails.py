@@ -76,6 +76,7 @@ class SQLSecurityGuardrail:
             violations.extend(self._validate_query_features(expression))
             violations.extend(self._validate_table_authorization(expression))
             violations.extend(self._validate_column_authorization(expression))
+            violations.extend(self._validate_function_authorization(expression))
 
         if violations:
             return GuardrailResult(allowed=False, violations=violations)
@@ -241,21 +242,46 @@ class SQLSecurityGuardrail:
         ]
 
     def _validate_table_authorization(self, expression: exp.Select):
-        allowed = self.policy.normalized_allowed_tables()
-        if allowed is None:
-            return []
+        allowed_tables = self.policy.normalized_allowed_tables()
+        allowed_schemas = self.policy.normalized_allowed_schemas()
 
         violations: list[GuardrailViolation] = []
-        seen: set[str] = set()
+        seen_tables: set[tuple[str | None, str]] = set()
 
         for table in self._physical_tables(expression):
             table_name = table.name
-            normalized_name = table_name.lower()
-            if normalized_name in seen:
-                continue
-            seen.add(normalized_name)
+            normalized_table = table_name.lower()
 
-            if normalized_name not in allowed:
+            schema_name = table.db
+            normalized_schema = schema_name.lower() if schema_name else None
+
+            table_key = (normalized_schema, normalized_table)
+
+            if table_key in seen_tables:
+                continue
+
+            seen_tables.add(table_key)
+
+            # Explicit schema must be authorized.
+            if (
+                normalized_schema is not None
+                and normalized_schema not in allowed_schemas
+            ):
+                violations.append(
+                    GuardrailViolation(
+                        rule="schema_authorization",
+                        message=(
+                            f"Schema '{schema_name}' is not authorized "
+                            "for this SQL agent."
+                        ),
+                    )
+                )
+
+            # Table must be authorized.
+            if (
+                allowed_tables is not None
+                and normalized_table not in allowed_tables
+            ):
                 violations.append(
                     GuardrailViolation(
                         rule="table_authorization",
@@ -355,6 +381,39 @@ class SQLSecurityGuardrail:
 
         return self._deduplicate_violations(violations)
 
+    def _validate_function_authorization(
+        self,
+        expression: exp.Expression,
+    ) -> list[GuardrailViolation]:
+        """Reject functions explicitly blocked by the SQL security policy."""
+
+        blocked_functions = self.policy.normalized_blocked_functions()
+
+        if not blocked_functions:
+            return []
+
+        violations: list[GuardrailViolation] = []
+
+        for function in expression.find_all(exp.Func):
+            function_name = getattr(function, "name", None)
+
+            if not function_name:
+                continue
+
+            normalized_name = str(function_name).lower()
+
+            if normalized_name in blocked_functions:
+                violations.append(
+                    GuardrailViolation(
+                        rule="dangerous_function",
+                        message=(
+                            f"Function '{normalized_name}' is not authorized "
+                            "for this SQL agent."
+                        ),
+                    )
+                )
+
+        return violations
     @staticmethod
     def _table_aliases(tables: list[exp.Table]) -> dict[str, str]:
         aliases: dict[str, str] = {}

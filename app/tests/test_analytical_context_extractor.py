@@ -352,3 +352,86 @@ def test_previous_context_is_not_mutated():
     assert second.metric == "quantity"
 
     assert first.time_range == second.time_range
+
+
+
+# ============================================================
+# GROUPING INTENT
+# ============================================================
+
+def test_overall_customer_count_does_not_require_grouping():
+    extractor = create_extractor()
+
+    context = extractor.extract(
+        "How many customers are in the database?"
+    )
+
+    assert context.entity == "customer"
+    assert context.aggregation == "count"
+    assert context.group_by_required is False
+
+
+def test_customer_count_by_city_requires_grouping():
+    extractor = create_extractor()
+
+    context = extractor.extract(
+        "How many customers are there by city?"
+    )
+
+    assert context.entity == "customer"
+    assert context.aggregation == "count"
+    assert context.group_by_required is True
+
+
+def test_revenue_by_product_requires_grouping():
+    extractor = create_extractor()
+
+    context = extractor.extract(
+        "Show revenue by product"
+    )
+
+    assert context.metric == "revenue"
+    assert context.aggregation == "sum"
+    assert context.group_by_required is True
+
+
+def test_top_products_by_revenue_requires_grouping():
+    extractor = create_extractor()
+
+    context = extractor.extract(
+        "Show the top 5 products by revenue"
+    )
+
+    assert context.entity == "product"
+    assert context.metric == "revenue"
+    assert context.aggregation == "sum"
+    assert context.group_by_required is True
+
+
+def test_which_n_products_highest_discount_requires_grouping_and_limit():
+    extractor = create_extractor()
+    context = extractor.extract(
+        "Which 10 products have generated the highest total discount amount?"
+    )
+    assert context.entity == "product"
+    assert context.metric == "discount_amount"
+    assert context.aggregation == "sum"
+    assert context.group_by_required is True
+    assert context.limit == 10
+    assert context.sort_direction == "descending"
+
+
+def test_metric_follow_up_preserves_grouping_intent():
+    extractor = create_extractor()
+    first = extractor.extract("Show the top 5 products by revenue")
+    second = extractor.extract("What about quantity?", previous_context=first)
+    assert second.group_by_required is True
+    assert second.entity == "product"
+    assert second.metric == "quantity"
+
+
+def test_overall_aggregate_does_not_require_grouping():
+    extractor = create_extractor()
+    context = extractor.extract("Show the overall total discount amount")
+    assert context.metric == "discount_amount"
+    assert context.group_by_required is False

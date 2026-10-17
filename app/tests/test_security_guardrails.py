@@ -471,3 +471,126 @@ def test_complexity_policy_can_disable_wildcard_limit_requirement():
     result = guardrail.validate("SELECT * FROM products")
 
     assert result.allowed is True
+
+
+def test_public_schema_table_is_allowed():
+    guardrail = SQLSecurityGuardrail(
+        SQLSecurityPolicy(
+            allowed_tables=frozenset({"customers"}),
+            allowed_schemas=frozenset({"public"}),
+        )
+    )
+
+    result = guardrail.validate(
+        "SELECT customer_id FROM public.customers LIMIT 10"
+    )
+
+    assert result.allowed is True
+
+def test_pg_catalog_schema_is_blocked():
+    guardrail = SQLSecurityGuardrail(
+        SQLSecurityPolicy(
+            allowed_tables=frozenset({"customers"}),
+            allowed_schemas=frozenset({"public"}),
+        )
+    )
+
+    result = guardrail.validate(
+        "SELECT * FROM pg_catalog.pg_tables LIMIT 10"
+    )
+
+    assert result.allowed is False
+    assert any(
+        v.rule == "schema_authorization"
+        for v in result.violations
+    )
+
+def test_information_schema_is_blocked():
+    guardrail = SQLSecurityGuardrail(
+        SQLSecurityPolicy(
+            allowed_tables=frozenset({"customers"}),
+            allowed_schemas=frozenset({"public"}),
+        )
+    )
+
+    result = guardrail.validate(
+        "SELECT * FROM information_schema.tables LIMIT 10"
+    )
+
+    assert result.allowed is False
+    assert any(
+        v.rule == "schema_authorization"
+        for v in result.violations
+    )
+
+def test_unauthorized_schema_cannot_reuse_authorized_table_name():
+    guardrail = SQLSecurityGuardrail(
+        SQLSecurityPolicy(
+            allowed_tables=frozenset({"customers"}),
+            allowed_schemas=frozenset({"public"}),
+        )
+    )
+
+    result = guardrail.validate(
+        "SELECT * FROM attacker.customers LIMIT 10"
+    )
+
+    assert result.allowed is False
+    assert any(
+        v.rule == "schema_authorization"
+        for v in result.violations
+    )
+
+def test_blocks_pg_sleep():
+    result = SQLSecurityGuardrail().validate(
+        "SELECT pg_sleep(20)"
+    )
+
+    assert result.allowed is False
+    assert any(
+        violation.rule == "dangerous_function"
+        for violation in result.violations
+    )
+
+
+def test_blocks_pg_sleep_case_insensitive():
+    result = SQLSecurityGuardrail().validate(
+        "SELECT PG_SLEEP(20)"
+    )
+
+    assert result.allowed is False
+    assert any(
+        violation.rule == "dangerous_function"
+        for violation in result.violations
+    )
+
+
+def test_blocks_schema_qualified_pg_sleep():
+    result = SQLSecurityGuardrail().validate(
+        "SELECT pg_catalog.pg_sleep(20)"
+    )
+
+    assert result.allowed is False
+    assert any(
+        violation.rule == "dangerous_function"
+        for violation in result.violations
+    )
+
+
+def test_allows_safe_aggregate_functions():
+    result = SQLSecurityGuardrail().validate(
+        "SELECT COUNT(*) FROM products"
+    )
+
+    assert result.allowed is True
+
+
+def test_allows_sum_function():
+    result = SQLSecurityGuardrail().validate(
+        """
+        SELECT SUM(price)
+        FROM products
+        """
+    )
+
+    assert result.allowed is True

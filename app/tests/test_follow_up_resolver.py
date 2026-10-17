@@ -172,3 +172,45 @@ def test_no_previous_context():
             "No previous question"
             in str(exc)
         )
+
+
+def test_explicit_new_question_is_not_classified_as_follow_up():
+    resolver = FollowUpResolver()
+
+    assert resolver.is_follow_up("What about quantity?") is True
+    assert resolver.is_follow_up("Show revenue by customer") is False
+    assert resolver.is_follow_up("How many orders were placed in 2025?") is False
+
+
+def test_resolver_does_not_merge_unrelated_question():
+    resolver = FollowUpResolver()
+    conversation = create_conversation("Show the top 5 products by revenue")
+
+    try:
+        resolver.resolve(conversation, "Show revenue by customer")
+    except ValueError as exc:
+        assert "not a contextual follow-up" in str(exc)
+    else:
+        raise AssertionError("Expected unrelated question to remain independent")
+
+
+
+def test_top_n_follow_up_replaces_existing_limit():
+    resolver = FollowUpResolver()
+    conversation = create_conversation("Show the top 5 products by revenue")
+    assert resolver.resolve(conversation, "top 3") == "Show the top 3 products by revenue"
+
+
+def test_show_only_top_n_is_recognized_as_limit_follow_up():
+    resolver = FollowUpResolver()
+    conversation = create_conversation("Show the top 5 products by revenue")
+    assert resolver.is_follow_up("Show only the top 3") is True
+    assert resolver.resolve(conversation, "Show only the top 3") == "Show the top 3 products by revenue"
+
+
+def test_discount_metric_follow_up_replaces_revenue():
+    resolver = FollowUpResolver()
+    conversation = create_conversation("Show the top 5 products by revenue")
+    assert resolver.resolve(conversation, "What about total discount amount?") == (
+        "Show the top 5 products by discount amount"
+    )

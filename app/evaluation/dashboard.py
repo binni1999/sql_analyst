@@ -153,6 +153,9 @@ footer {{ color:var(--muted); font-size:12px; margin-top:28px; }}
     <div class="card"><div class="metric-label">Answer accuracy</div><div class="metric-value">{_pct(summary.answer_accuracy)}</div></div>
     <div class="card"><div class="metric-label">Behavior accuracy</div><div class="metric-value">{_pct(summary.behavior_accuracy)}</div></div>
     <div class="card"><div class="metric-label">Total duration</div><div class="metric-value">{summary.total_duration_ms:.1f} ms</div></div>
+    <div class="card"><div class="metric-label">P50 latency</div><div class="metric-value">{summary.p50_duration_ms:.1f} ms</div></div>
+    <div class="card"><div class="metric-label">P95 latency</div><div class="metric-value">{summary.p95_duration_ms:.1f} ms</div></div>
+    <div class="card"><div class="metric-label">P99 latency</div><div class="metric-value">{summary.p99_duration_ms:.1f} ms</div></div>
   </div>
 
   <section class="section">

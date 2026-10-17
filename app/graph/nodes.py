@@ -5,6 +5,20 @@ from langgraph.types import interrupt
 from models.state import AgentState, AgentStep
 from models.execution_trace import ExecutionTraceEvent
 
+from contextlib import nullcontext
+
+from services.observability import _CURRENT_CONTEXT
+from services.llm_errors import user_facing_llm_error
+from services.deterministic_answer import build_deterministic_answer
+
+def _observability_stage(stage: str):
+    context = _CURRENT_CONTEXT.get()
+
+    if context is None:
+        return nullcontext()
+
+    return context.stage(stage)
+
 
 def _add_trace_event(
     agent_state: AgentState,
@@ -120,7 +134,8 @@ def sql_node(state, sql_agent):
 
     start_time = time.perf_counter()
 
-    agent_state = sql_agent.run(agent_state)
+    with _observability_stage("sql_agent"):
+        agent_state = sql_agent.run(agent_state)
 
     duration_ms = (
         time.perf_counter() - start_time
@@ -263,18 +278,28 @@ def answer_node(state, answer_generator):
     try:
         analyzed_result = agent_state.analytics.analysis
 
-        agent_state.answer = answer_generator.generate(
-            question=agent_state.question,
-            analyzed_result=analyzed_result,
-        )
+        with _observability_stage("answer_generation"):
+            agent_state.answer = answer_generator.generate(
+                question=agent_state.question,
+                analyzed_result=analyzed_result,
+            )
 
     except Exception as exc:
         duration_ms = (
             time.perf_counter() - start_time
         ) * 1000
 
+        # Preserve a useful result when only answer generation fails.
+        # Never fabricate a fallback from unsuccessful analytics.
+        if agent_state.analytics and agent_state.analytics.success:
+            fallback_answer = build_deterministic_answer(
+                agent_state.analytics.analysis
+            )
+            if fallback_answer is not None:
+                agent_state.answer = fallback_answer
+
         agent_state.mark_failure(
-            f"Answer generation failed: {exc}"
+            user_facing_llm_error(exc, "answer_generation")
         )
 
         _add_trace_event(

@@ -9,6 +9,7 @@ class AnalyticalContext(BaseModel):
     metric: str | None = None
 
     aggregation: str | None = None
+    group_by_required: bool = False
 
     limit: int | None = None
 

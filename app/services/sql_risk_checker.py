@@ -44,7 +44,14 @@ class SQLRiskChecker:
         has_order = tree.args.get("order") is not None
         has_group = tree.args.get("group") is not None
         has_aggregation = bool(list(tree.find_all(exp.AggFunc)))
-        has_star = bool(list(tree.find_all(exp.Star)))
+        has_star = any(
+            isinstance(projection, exp.Star)
+            or (
+                isinstance(projection, exp.Column)
+                and isinstance(projection.this, exp.Star)
+            )
+            for projection in tree.expressions
+        )
         has_where = tree.args.get("where") is not None
         subquery_count = sum(1 for _ in tree.find_all(exp.Subquery))
 

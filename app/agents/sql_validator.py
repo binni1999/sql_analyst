@@ -269,8 +269,10 @@ class SQLValidator:
 
         cte_map = {}
 
-        with_clause = expression.args.get("with")
-
+        with_clause = (
+            expression.args.get("with_")
+            or expression.args.get("with")
+        )
         if not with_clause:
             return cte_map
 

@@ -130,3 +130,16 @@ def test_fix_sql_includes_analytical_context():
         "Respect the structured analytical context"
         in prompt
     )
+
+
+
+
+def test_generate_uses_scalar_vs_grouped_aggregation_guidance():
+    from prompts.sql_prompt import SQL_GENERATOR_SYSTEM_PROMPT
+
+    assert "Distinguish scalar aggregates from grouped aggregates" in (
+        SQL_GENERATOR_SYSTEM_PROMPT
+    )
+    assert "one overall total or count" in SQL_GENERATOR_SYSTEM_PROMPT
+    assert "breakdown by a dimension" in SQL_GENERATOR_SYSTEM_PROMPT
+    assert "Do not group by a primary key" in SQL_GENERATOR_SYSTEM_PROMPT

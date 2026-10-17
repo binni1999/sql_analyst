@@ -12,6 +12,7 @@ def test_analytical_context_defaults():
     assert context.sort_direction is None
     assert context.filters == []
     assert context.time_range is None
+    assert context.group_by_required is False
 
 
 def test_analytical_context_for_revenue_query():
@@ -84,3 +85,13 @@ def test_analytical_context_can_store_time_range():
     assert context.time_range == {
         "year": 2025
     }
+
+
+def test_analytical_context_can_store_grouping_intent():
+    context = AnalyticalContext(
+        entity="customer",
+        aggregation="count",
+        group_by_required=True,
+    )
+
+    assert context.group_by_required is True

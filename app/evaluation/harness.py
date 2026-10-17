@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Protocol
 from uuid import uuid4
-
+import math
 from pydantic import BaseModel, Field
 
 from evaluation.answer_evaluator import AnswerComparisonResult, AnswerCorrectnessEvaluator
@@ -120,6 +120,9 @@ class EvaluationSummary(BaseModel):
     behavior_accuracy: float = 0.0
 
     total_duration_ms: float = 0.0
+    p50_duration_ms: float = 0.0
+    p95_duration_ms: float = 0.0
+    p99_duration_ms: float = 0.0
     results: list[EvaluationCaseResult] = Field(default_factory=list)
 
 
@@ -127,6 +130,14 @@ class EvaluationSummary(BaseModel):
 class _CaseExecution:
     responses: list[DataAnalystResponse]
     conversation_id: str
+
+def _nearest_rank_percentile(values: list[float], percentile: float) -> float:
+    if not values:
+        return 0.0
+
+    ordered = sorted(values)
+    rank = max(1, math.ceil((percentile / 100.0) * len(ordered)))
+    return ordered[rank - 1]
 
 
 class EvaluationHarness:
@@ -186,7 +197,30 @@ class EvaluationHarness:
         )
 
     def run_dataset(self, dataset: EvaluationDataset) -> EvaluationSummary:
-        results = [self.run_case(case) for case in dataset.cases]
+        results: list[EvaluationCaseResult] = []
+
+        for case in dataset.cases:
+            try:
+                results.append(self.run_case(case))
+            except Exception as exc:
+                # Keep the dataset run alive when one case fails.
+                # Do not expose potentially sensitive exception details.
+                runtime = EvaluationRuntime(
+                    case_id=case.case_id,
+                    conversation_id=f"evaluation-{case.case_id}-failed",
+                    final_question=case.question,
+                    success=False,
+                    errors=[
+                        f"Evaluation case execution failed ({type(exc).__name__})."
+                    ],
+                )
+                results.append(
+                    EvaluationCaseResult(
+                        case_id=case.case_id,
+                        runtime=runtime,
+                    )
+                )
+
         return self.summarize(dataset, results)
 
     @staticmethod
@@ -223,6 +257,12 @@ class EvaluationHarness:
         answer_matched = sum(result.match for result in answer_results)
         behavior_passed = sum(result.get("passed", False) for result in behavior_results)
 
+        durations = [
+            float(result.runtime.total_duration_ms)
+            for result in results
+            if result.runtime.total_duration_ms is not None
+            and result.runtime.total_duration_ms > 0
+        ]
         return EvaluationSummary(
             dataset_id=dataset.dataset_id,
             dataset_version=dataset.version,
@@ -255,6 +295,9 @@ class EvaluationHarness:
                 for result in results
             ),
             results=results,
+            p50_duration_ms=_nearest_rank_percentile(durations, 50),
+            p95_duration_ms=_nearest_rank_percentile(durations, 95),
+            p99_duration_ms=_nearest_rank_percentile(durations, 99),
         )
 
     def _execute_case(self, case: EvaluationCase) -> _CaseExecution:

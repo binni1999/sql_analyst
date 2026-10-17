@@ -179,35 +179,40 @@ class ContextValidator:
         expression,
         requirements: SQLRequirements,
     ) -> list[str]:
-
         if requirements.limit is None:
             return []
 
-        limit_expression = expression.args.get("limit")
+        # Search every SELECT, including CTEs and subqueries.
+        select_expressions = list(expression.find_all(exp.Select))
 
-        if limit_expression is None:
+        # Include the root query when it is itself a SELECT.
+        if isinstance(expression, exp.Select):
+            select_expressions.insert(0, expression)
+
+        found_limits: list[int] = []
+
+        for select in select_expressions:
+            limit_expression = select.args.get("limit")
+            if limit_expression is None:
+                continue
+
+            limit_value = self._extract_limit_value(limit_expression)
+            if limit_value is not None:
+                found_limits.append(limit_value)
+
+        if not found_limits:
             return [
                 f"Expected LIMIT {requirements.limit}, "
                 "but no LIMIT clause was found."
             ]
 
-        limit_value = self._extract_limit_value(
-            limit_expression
-        )
-
-        if limit_value is None:
-            return [
-                "Unable to determine the generated SQL LIMIT value."
-            ]
-
-        if limit_value != requirements.limit:
+        if requirements.limit not in found_limits:
             return [
                 f"Expected LIMIT {requirements.limit} "
-                f"but found LIMIT {limit_value}."
+                f"but found LIMIT {found_limits[0]}."
             ]
 
         return []
-
     def _extract_limit_value(
         self,
         limit_expression
@@ -232,17 +237,8 @@ class ContextValidator:
         expression,
         requirements: SQLRequirements,
     ) -> list[str]:
-
         if requirements.sort_direction is None:
             return []
-
-        order_expression = expression.args.get("order")
-
-        if order_expression is None:
-            return [
-                "A sort direction was requested, "
-                "but no ORDER BY clause was found."
-            ]
 
         expected_direction = self._normalize_sort_direction(
             requirements.sort_direction
@@ -254,30 +250,46 @@ class ContextValidator:
                 f"'{requirements.sort_direction}'."
             ]
 
-        ordered_expressions = order_expression.expressions
+        select_expressions = list(expression.find_all(exp.Select))
 
-        if not ordered_expressions:
+        if isinstance(expression, exp.Select):
+            select_expressions.insert(0, expression)
+
+        found_order = False
+
+        for select in select_expressions:
+            order_expression = select.args.get("order")
+
+            if order_expression is None:
+                continue
+
+            ordered_expressions = order_expression.expressions
+
+            if not ordered_expressions:
+                continue
+
+            found_order = True
+            primary_order = ordered_expressions[0]
+
+            if isinstance(primary_order, exp.Ordered):
+                is_descending = primary_order.args.get("desc")
+                actual_direction = (
+                    "DESC" if is_descending else "ASC"
+                )
+
+                if actual_direction == expected_direction:
+                    return []
+
+        if not found_order:
             return [
-                "ORDER BY clause does not contain an expression."
+                "A sort direction was requested, "
+                "but no ORDER BY clause was found."
             ]
 
-        primary_order = ordered_expressions[0]
-
-        actual_direction = "ASC"
-
-        if isinstance(primary_order, exp.Ordered):
-
-            if primary_order.args.get("desc"):
-                actual_direction = "DESC"
-
-        if actual_direction != expected_direction:
-
-            return [
-                f"Expected {expected_direction} ordering "
-                f"but found {actual_direction}."
-            ]
-
-        return []
+        return [
+            f"Expected sort direction {expected_direction}, "
+            "but no matching ORDER BY direction was found."
+        ]
 
 
     @staticmethod
@@ -306,16 +318,41 @@ class ContextValidator:
         schema_map: dict[str, set[str]],
     ) -> list[str]:
 
-        if not requirements.group_by_required:
-            return []
-
         group_expression = expression.args.get("group")
 
+        if not requirements.group_by_required:
+            if (
+                group_expression is not None
+                and requirements.aggregation is not None
+                and requirements.aggregation.lower()
+                in {"count", "sum", "avg", "min", "max"}
+            ):
+                return [
+                    "SQL contains an unrequested GROUP BY clause "
+                    "for an aggregate query."
+                ]
+
+            return []
+
+        
         if group_expression is None:
-            return [
-                "Analytical context requires entity-level grouping, "
-                "but no GROUP BY clause was found."
-            ]
+            # The outer SELECT may read already-aggregated results
+            # from a CTE or derived table.
+            grouped_subquery_exists = any(
+                isinstance(node, exp.Select)
+                and node.args.get("group") is not None
+                and bool(node.args["group"].expressions)
+                for node in expression.find_all(exp.Select)
+            )
+
+            if not grouped_subquery_exists:
+                return [
+                    "Analytical context requires entity-level grouping, "
+                    "but no GROUP BY clause was found."
+                ]
+
+            return []
+
 
         if not group_expression.expressions:
             return [

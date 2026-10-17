@@ -41,13 +41,15 @@ function QueryInput({
                     disabled={loading}
                 />
 
+
                 <button
                     type="button"
-                    onClick={onAsk}
+                    onClick={() => onAsk()}
                     disabled={loading || !question.trim()}
                 >
                     {loading ? "Analyzing..." : "Analyze"}
                 </button>
+
 
                 <div className="query-examples">
                     <span className="query-examples-label">

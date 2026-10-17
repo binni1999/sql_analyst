@@ -1,22 +1,40 @@
 # pyrefly: ignore [missing-import]
 from sqlalchemy import text
 # pyrefly: ignore [missing-import]
-
+from decimal import Decimal
+import math
 from sqlalchemy.exc import SQLAlchemyError
 import sqlglot
 from sqlglot import exp
+from sqlalchemy.exc import DBAPIError
+# pyrefly: ignore [missing-import]
+from observability.metrics import metrics_registry
 try:
-    from .dbconnect import engine
+    from .dbconnect import engine, readonly_engine
 except ImportError as e:
     if "relative import" in str(e):
         # pyrefly: ignore [missing-import]
-        from dbconnect import engine
+        from dbconnect import engine, readonly_engine
     else:
         raise
 
 
+def format_numeric_value(value):
+    """Round floating-point and Decimal results to 2 decimal places."""
+    if isinstance(value, bool):
+        return value
 
+    if isinstance(value, Decimal):
+        if value.is_finite():
+            return round(value, 2)
+        return str(value)
 
+    if isinstance(value, float):
+        if math.isfinite(value):
+            return round(value, 2)
+        return str(value)
+
+    return value
 
 class DatabaseService:
 
@@ -239,33 +257,94 @@ class DatabaseService:
         max_result_rows: int,
     ):
         """Execute an already-guarded SELECT with DB-level safety controls."""
+
+        # Count every attempt that reaches the database execution boundary.
+        metrics_registry.increment("sql.executions")
+
         if timeout_ms <= 0:
             raise ValueError("timeout_ms must be greater than zero")
+
         if max_result_rows <= 0:
             raise ValueError("max_result_rows must be greater than zero")
 
-        with engine.connect() as connection:
-            # set_config(..., true) makes statement_timeout local to the
-            # current transaction and avoids changing the pooled session.
-            connection.execute(
-                text("SELECT set_config('statement_timeout', :timeout, true)"),
-                {"timeout": f"{timeout_ms}ms"},
+        try:
+            # Measure the complete database execution lifecycle.
+            with metrics_registry.timer("sql.execution_ms"):
+                with readonly_engine.connect() as connection:
+                    connection.exec_driver_sql("SET TRANSACTION READ ONLY")
+                    # set_config(..., true) makes statement_timeout local to the
+                    # current transaction and avoids changing the pooled session.
+                    connection.execute(
+                        text(
+                            "SELECT set_config("
+                            "'statement_timeout', :timeout, true)"
+                        ),
+                        {"timeout": f"{timeout_ms}ms"},
+                    )
+
+                    result = connection.execute(text(sql))
+
+                    columns = list(result.keys())
+
+                    rows = result.fetchmany(max_result_rows + 1)
+
+                    if len(rows) > max_result_rows:
+                        raise ValueError(
+                            "Query returned more rows than the configured "
+                            "maximum "
+                            f"of {max_result_rows}."
+                        )
+
+                    response = {
+                            "columns": columns,
+                            "rows": [
+                                [format_numeric_value(value) for value in row]
+                                for row in rows
+                            ],
+                        }
+
+            # Query completed successfully.
+            metrics_registry.increment("sql.successes")
+
+            # Record the number of rows returned by the query.
+            metrics_registry.increment(
+                "sql.rows_returned",
+                len(response["rows"]),
             )
 
-            result = connection.execute(text(sql))
-            columns = list(result.keys())
-            rows = result.fetchmany(max_result_rows + 1)
+            return response
 
-            if len(rows) > max_result_rows:
-                raise ValueError(
-                    "Query returned more rows than the configured maximum "
-                    f"of {max_result_rows}."
+        except ValueError as exc:
+            metrics_registry.increment("sql.failures")
+
+            if "configured maximum" in str(exc).lower():
+                metrics_registry.increment(
+                    "sql.result_limit_rejections"
                 )
 
-            return {
-                "columns": columns,
-                "rows": [list(row) for row in rows],
-            }
+            raise
+
+        except DBAPIError as exc:
+            metrics_registry.increment("sql.failures")
+
+            # PostgreSQL SQLSTATE 57014 means query_canceled.
+            # PostgreSQL statement_timeout raises this SQLSTATE.
+            original_error = getattr(exc, "orig", None)
+            sqlstate = (
+                getattr(original_error, "sqlstate", None)
+                or getattr(original_error, "pgcode", None)
+            )
+
+            if sqlstate == "57014":
+                metrics_registry.increment("sql.timeouts")
+            else:
+                metrics_registry.increment("sql.database_errors")
+
+            raise
+
+        except Exception:
+            metrics_registry.increment("sql.failures")
+            raise
 
 
     def validate_query(self, sql: str):

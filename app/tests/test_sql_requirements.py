@@ -26,6 +26,7 @@ def test_build_revenue_product_requirements():
         metric="revenue",
         aggregation="sum",
         limit=5,
+        group_by_required=True,
         sort_direction="desc",
     )
 
@@ -99,6 +100,7 @@ def test_build_bottom_products_requirements():
         metric="revenue",
         aggregation="sum",
         limit=10,
+        group_by_required=True,
         sort_direction="asc",
     )
 
@@ -110,3 +112,18 @@ def test_build_bottom_products_requirements():
     assert result.group_by_required is True
     assert result.limit == 10
     assert result.sort_direction == "asc"
+
+def test_build_overall_customer_count_without_grouping():
+    builder = SQLRequirementsBuilder()
+
+    context = AnalyticalContext(
+        entity="customer",
+        aggregation="count",
+        group_by_required=False,
+    )
+
+    result = builder.build(context)
+
+    assert result.entity == "customer"
+    assert result.aggregation == "count"
+    assert result.group_by_required is False

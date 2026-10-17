@@ -149,3 +149,62 @@ def test_harness_uses_same_conversation_for_multiple_turns():
     assert result.runtime.turns_executed == 2
     assert runner.calls[0][1] == runner.calls[1][1]
     assert result.behavior["passed"] is True
+
+
+def test_dataset_continues_after_a_case_execution_failure():
+    first = EvaluationCase(
+        case_id="case-fails",
+        category="runtime",
+        description="Runner raises",
+        question="Trigger failure",
+    )
+    second = EvaluationCase(
+        case_id="case-succeeds",
+        category="runtime",
+        description="Runner succeeds",
+        question="Show revenue",
+    )
+
+    dataset = EvaluationDataset(
+        dataset_id="failure-isolation",
+        version="1.0.0",
+        description="Verify per-case failure isolation",
+        cases=[first, second],
+    )
+
+    class PartiallyFailingRunner:
+        def __init__(self):
+            self.calls = []
+
+        def ask(self, question, *, conversation_id, human_approval=None):
+            self.calls.append(question)
+            if question == "Trigger failure":
+                raise RuntimeError("sensitive detail must not be reported")
+            return _response()
+
+    runner = PartiallyFailingRunner()
+    summary = EvaluationHarness(runner).run_dataset(dataset)
+
+    assert runner.calls == ["Trigger failure", "Show revenue"]
+    assert summary.evaluated_cases == 2
+    assert summary.passed_cases == 1
+    assert summary.accuracy == 0.5
+
+    failed = summary.results[0]
+    assert failed.runtime.success is False
+    assert failed.runtime.errors == [
+        "Evaluation case execution failed (RuntimeError)."
+    ]
+    assert failed.sql is None
+    assert failed.semantic is None
+    assert failed.answer is None
+
+
+def test_nearest_rank_percentiles_handle_small_and_empty_samples():
+    from evaluation.harness import _nearest_rank_percentile
+
+    assert _nearest_rank_percentile([], 50) == 0.0
+    assert _nearest_rank_percentile([12.0], 50) == 12.0
+    assert _nearest_rank_percentile([10.0, 20.0, 30.0, 40.0], 50) == 20.0
+    assert _nearest_rank_percentile([10.0, 20.0, 30.0, 40.0], 95) == 40.0
+    assert _nearest_rank_percentile([10.0, 20.0, 30.0, 40.0], 99) == 40.0

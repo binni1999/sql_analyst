@@ -1,3 +1,4 @@
+from dbm import dumb
 from agents.business_knowledge_agent import BusinessKnowledgeAgent
 from knowledge.business_documents import BUSINESS_KNOWLEDGE_DOCUMENTS
 from services.business_knowledge_retriever import BusinessKnowledgeRetriever
@@ -11,6 +12,7 @@ from agents.result_analyzer import ResultAnalyzer
 from agents.answer_generator import AnswerGenerator
 
 from graph.workflow import DataAnalystGraph
+from security.query_cost import QueryCostGuard
 from agents.metadata_agent import MetadataAgent
 from agents.analytics_agent import AnalyticsAgent
 
@@ -35,8 +37,12 @@ from security.guardrails import SQLSecurityGuardrail
 from security.executor import SecureSQLExecutor
 from security.policies import SQLSecurityPolicy
 from security.input_guardrails import PromptInjectionGuardrail, PromptSecurityPolicy
-from config import get_settings
+try:
+    from config import get_settings
+except ImportError:
+    from app.config import get_settings
 from testing.llm_doubles import TestAnswerGenerator, TestSQLGenerator
+from security.query_cost import QueryCostGuard
 
 def create_data_analyst_service() -> DataAnalystService:
 
@@ -54,7 +60,7 @@ def create_data_analyst_service() -> DataAnalystService:
     analytical_context_extractor = (
         AnalyticalContextExtractor()
     )
-
+    query_cost_guard = QueryCostGuard()
     # -----------------------------------------
     # Metadata Agent
     # -----------------------------------------
@@ -83,11 +89,25 @@ def create_data_analyst_service() -> DataAnalystService:
     )
 
     # Step 58/59 tool-calling foundation + Step 67 security boundary.
-    security_policy = SQLSecurityPolicy()
+    security_policy = SQLSecurityPolicy(
+        allowed_tables=frozenset(
+            {
+                "customers",
+                "products",
+                "orders",
+                "order_items",
+                "payments",
+                "reviews",
+            }
+        )
+    )
+
     security_guardrail = SQLSecurityGuardrail(security_policy)
+    # query_cost_guard = QueryCostGuard()
     secure_executor = SecureSQLExecutor(
         db=db,
         guardrail=security_guardrail,
+        cost_guard=query_cost_guard,
     )
 
     tool_executor = ToolCallingExecutor(

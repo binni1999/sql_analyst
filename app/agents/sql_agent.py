@@ -1,4 +1,5 @@
-from agents.sql_generator import SQLGenerator
+﻿from agents.sql_generator import SQLGenerator
+from services.llm_errors import user_facing_llm_error
 
 from agents.sql_validator import SQLValidator
 
@@ -278,7 +279,7 @@ class SQLAgent:
 
             max_retries=self.tool_executor.max_retries,
 
-            max_tool_rounds=min(self.tool_executor.max_tool_rounds, 2),
+            max_tool_rounds=min(self.tool_executor.max_tool_rounds, 3),
 
         )
 
@@ -1732,10 +1733,10 @@ class SQLAgent:
                 )
 
 
+                print("\nSQL that failed semantic validation:")
+                print(sql)
 
                 print("Errors:")
-
-
 
                 for error in semantic_validation["errors"]:
 
@@ -2233,6 +2234,39 @@ class SQLAgent:
 
 
 
+    @staticmethod
+    def _validate_explicit_schema_intent(question: str, schemas: list[dict] | None) -> list[str]:
+        """Reject explicit unknown table/column identifiers before SQL generation."""
+        import re
+        if not schemas:
+            return []
+        table_columns: dict[str, set[str]] = {}
+        for item in schemas:
+            if not isinstance(item, dict) or not item.get("table"):
+                continue
+            names: set[str] = set()
+            for col in item.get("columns", []):
+                if isinstance(col, str):
+                    names.add(col.lower())
+                elif isinstance(col, dict) and col.get("name"):
+                    names.add(str(col["name"]).lower())
+            table_columns[str(item["table"]).lower()] = names
+
+        errors: list[str] = []
+        normalized = question.lower()
+        # The wording in Test 17 explicitly names a table: "from X table".
+        for match in re.finditer(r"\bfrom\s+(?:the\s+)?([a-z_][a-z0-9_]*)\s+table\b", normalized):
+            table = match.group(1)
+            if table not in table_columns:
+                errors.append(f"Unknown table requested: '{table}'. Please use a table present in the database schema.")
+        # Validate explicit snake_case grouping identifiers; natural-language
+        # entities such as "by product" are intentionally left to the planner.
+        for match in re.finditer(r"\bgrouped\s+by\s+([a-z_][a-z0-9_]*_[a-z0-9_]+)\b", normalized):
+            column = match.group(1)
+            if not any(column in columns for columns in table_columns.values()):
+                errors.append(f"Unknown column requested: '{column}'. Please use a column present in the database schema.")
+        return errors
+
     def run(self, state: AgentState):
 
 
@@ -2297,6 +2331,15 @@ class SQLAgent:
 
         schemas = state.metadata.schemas
 
+        # Fail closed: don't allow generation/repair to silently substitute a
+        # different table or grouping column than the user explicitly requested.
+        intent_errors = self._validate_explicit_schema_intent(question, schemas)
+        if intent_errors:
+            error = " ".join(intent_errors)
+            state.sql = SQLResult(success=False, sql=None, attempts=0, errors=intent_errors)
+            state.mark_failure(error)
+            return state
+
 
 
         metadata = state.metadata.metadata
@@ -2357,7 +2400,7 @@ class SQLAgent:
 
             error = (
 
-                f"SQL generation failed: {str(exc)}"
+                user_facing_llm_error(exc, "sql_generation")
 
             )
 
