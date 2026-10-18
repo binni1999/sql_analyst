@@ -27,7 +27,7 @@ function QueryInput({
 
     return (
         <section className="query-section">
-            <h2>Ask your data question</h2>
+            <h3>Ask your data question</h3>
 
             <div className="query-box">
                 <textarea

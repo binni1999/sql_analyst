@@ -9,6 +9,7 @@ import uuid
 
 # pyrefly: ignore [missing-import]
 from api.routes import router
+from api.auth_routes import router as auth_router
 
 try:
     from config import get_settings
@@ -106,6 +107,7 @@ app.add_middleware(
 # ============================================================
 
 app.include_router(router)
+app.include_router(auth_router)
 
 
 # ============================================================

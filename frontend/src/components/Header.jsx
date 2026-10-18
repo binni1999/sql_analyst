@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || "http://localhost:8000").replace(/\/$/, "");
 
-function Header() {
+function Header({ user, onLogout }) {
     const [health, setHealth] = useState("checking");
 
     useEffect(() => {
@@ -35,18 +35,36 @@ function Header() {
         disconnected: "Backend Disconnected",
     };
 
+
     return (
         <header className="app-header">
-            <div>
-                <h1>Data Pilot</h1>
-                <p>Multi-Agent SQL Data Analyst</p>
+            <div className="brand">
+                <img
+                    src="/datapilot.png"
+                    alt="DataPilot"
+                    className="brand-logo"
+                />
+                <div>
+                    <h1>Data Pilot</h1>
+                    <p>Multi-Agent SQL Data Analyst</p>
+                </div>
             </div>
-            <div className={`connection-status connection-status-${health}`} role="status" aria-live="polite">
-                <span className="status-dot" />
-                {statusLabels[health]}
+
+            <div className="header-actions">
+                <div className="header-user" title={user?.email}>{user?.name || user?.email}</div>
+                <div
+                    className={`connection-status connection-status-${health}`}
+                    role="status"
+                    aria-live="polite"
+                >
+                    <span className="status-dot" />
+                    {statusLabels[health]}
+                </div>
+                <button type="button" className="logout-button" onClick={onLogout}>Log out</button>
             </div>
         </header>
     );
+
 }
 
 export default Header;

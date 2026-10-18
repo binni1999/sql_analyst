@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 
 import { askDataAnalyst } from "./services/api";
+import { getCurrentUser, logout } from "./services/auth";
+import AuthPage from "./components/AuthPage";
 
 import Header from "./components/Header";
 import QueryInput from "./components/QueryInput";
@@ -35,6 +37,8 @@ function getErrorDetails(error, fallbackCode = "ANALYSIS_FAILED") {
 }
 
 function App() {
+  const [user, setUser] = useState(null);
+  const [authLoading, setAuthLoading] = useState(true);
   const [question, setQuestion] = useState("");
   const [response, setResponse] = useState(null);
   const [conversationId, setConversationId] = useState(null);
@@ -44,6 +48,26 @@ function App() {
   const [approvalModalOpen, setApprovalModalOpen] = useState(false);
 
   useEffect(() => {
+    let active = true;
+    getCurrentUser()
+      .then(({ user: current }) => { if (active) setUser(current); })
+      .catch(() => { if (active) setUser(null); })
+      .finally(() => { if (active) setAuthLoading(false); });
+    return () => { active = false; };
+  }, []);
+
+  const handleLogout = async () => {
+    try { await logout(); } catch { /* Clear the local view even if the session has expired. */ }
+    setUser(null);
+    setQuestion("");
+    setResponse(null);
+    setConversationId(null);
+    setError(null);
+    setLastQuestion("");
+    setApprovalModalOpen(false);
+  };
+
+  useEffect(() => {
     if (!approvalModalOpen) return undefined;
     const handleKeyDown = (event) => {
       if (event.key === "Escape" && !loading) setApprovalModalOpen(false);
@@ -51,6 +75,13 @@ function App() {
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [approvalModalOpen, loading]);
+
+  if (authLoading) {
+    return <main className="auth-loading" role="status">Loading your DataPilot workspace…</main>;
+  }
+  if (!user) {
+    return <AuthPage onAuthenticated={setUser} />;
+  }
 
   const applyResponse = (data) => {
     setResponse(data);
@@ -123,7 +154,7 @@ function App() {
 
   return (
     <div className="app">
-      <Header />
+      <Header user={user} onLogout={handleLogout} />
 
       <main className="app-main">
         <QueryInput

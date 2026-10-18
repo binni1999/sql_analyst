@@ -23,3 +23,4 @@ psycopg[binary,pool]
 redis
 pytest
 langchain-google-genai
+pydantic-settings

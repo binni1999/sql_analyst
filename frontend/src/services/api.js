@@ -15,6 +15,7 @@ export async function askDataAnalyst(
     try {
         response = await fetch(`${API_BASE_URL}/api/ask`, {
             method: "POST",
+            credentials: "include",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(payload),
         });
@@ -42,4 +43,4 @@ export async function askDataAnalyst(
         throw error;
     }
     return data;
-}
+} 
